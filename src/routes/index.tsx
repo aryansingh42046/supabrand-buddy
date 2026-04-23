@@ -1,10 +1,11 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { FilterSidebar } from "@/components/FilterSidebar";
 import { ProductCard } from "@/components/ProductCard";
+import { RecommendationSection } from "@/components/RecommendationSection";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -14,12 +15,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { useAuth } from "@/hooks/use-auth";
+import { useCart } from "@/hooks/use-cart";
+import { useHybridRecommendations } from "@/hooks/use-hybrid-recommendations";
+import { useSessionEvents } from "@/hooks/use-session-events";
 import {
   fetchFacets,
   fetchProducts,
+  fetchRecommendationPool,
   type Product,
   type ProductFilters,
 } from "@/lib/products";
+import { trackPageView } from "@/lib/session-analytics";
+import {
+  deriveSessionSignals,
+  recommendProducts,
+  stripRecommendationImpressions,
+} from "@/lib/recommendations";
 
 const searchSchema = z.object({
   search: z.string().optional(),
@@ -43,19 +55,77 @@ export const Route = createFileRoute("/")({
 function Index() {
   const router = useRouter();
   const search = Route.useSearch();
+  const { user } = useAuth();
+  const { items: cartItems } = useCart();
+  const sessionEvents = useSessionEvents();
+  const recommendationEvents = stripRecommendationImpressions(sessionEvents);
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [recommendationPool, setRecommendationPool] = useState<Product[]>([]);
   const [facets, setFacets] = useState<{
     brands: { name: string; count: number }[];
     categories: { name: string; count: number }[];
   }>({ brands: [], categories: [] });
+  const lastTrackedState = useRef<string | null>(null);
 
   const pageSize = 24;
   const page = search.page ?? 1;
 
   useEffect(() => {
+    const stateKey = JSON.stringify({
+      search: search.search ?? "",
+      brand: search.brand ?? "",
+      category: search.category ?? "",
+      minRating: search.minRating ?? null,
+      maxPrice: search.maxPrice ?? null,
+      sort: search.sort ?? "relevance",
+      page,
+    });
+
+    if (lastTrackedState.current === stateKey) return;
+    lastTrackedState.current = stateKey;
+
+    trackPageView("/", {
+      userId: user?.id,
+      metadata: {
+        search: search.search ?? "",
+        brand: search.brand ?? null,
+        category: search.category ?? null,
+        minRating: search.minRating ?? null,
+        maxPrice: search.maxPrice ?? null,
+        sort: search.sort ?? "relevance",
+        page,
+      },
+    });
+  }, [
+    user?.id,
+    search.search,
+    search.brand,
+    search.category,
+    search.minRating,
+    search.maxPrice,
+    search.sort,
+    page,
+  ]);
+
+  useEffect(() => {
     fetchFacets().then(setFacets).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecommendationPool()
+      .then((pool) => {
+        if (!cancelled) setRecommendationPool(pool);
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -101,6 +171,42 @@ function Index() {
   ]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const sessionSignals = deriveSessionSignals(recommendationEvents);
+  const recentViewedProducts = recommendationPool.filter((product) =>
+    sessionSignals.recentProductIds.includes(product.id),
+  );
+  const orderProducts = recommendationPool.filter((product) =>
+    sessionSignals.orderProductIds.includes(product.id),
+  );
+  const clientRecommendedProducts = recommendProducts(recommendationPool, {
+    recentProducts: [...recentViewedProducts, ...orderProducts],
+    cartProducts: cartItems.map((item) => item.product),
+    orderProducts,
+    searchTerms: search.search ? [search.search, ...sessionSignals.searchTerms] : sessionSignals.searchTerms,
+    events: recommendationEvents,
+    excludeIds: products.map((product) => product.id),
+    limit: 8,
+  });
+  const { items: recommendedProducts } = useHybridRecommendations({
+    pool: recommendationPool,
+    context: {
+      recentProducts: [...recentViewedProducts, ...orderProducts],
+      cartProducts: cartItems.map((item) => item.product),
+      orderProducts,
+      searchTerms: search.search ? [search.search, ...sessionSignals.searchTerms] : sessionSignals.searchTerms,
+      events: recommendationEvents,
+      excludeIds: products.map((product) => product.id),
+      limit: 8,
+    },
+    fallback: clientRecommendedProducts,
+    enabled: recommendationPool.length > 0,
+  });
+  const showRecommendations =
+    !search.search &&
+    !search.brand &&
+    !search.category &&
+    !search.minRating &&
+    !search.maxPrice;
 
   const setSort = (val: string) =>
     router.navigate({
@@ -129,6 +235,16 @@ function Index() {
         !search.maxPrice && <Hero />}
 
       <main className="mx-auto max-w-7xl px-4 py-8 md:px-6">
+        {showRecommendations && recommendedProducts.length > 0 && (
+          <div className="mb-8">
+            <RecommendationSection
+              title="Recommended for you"
+              description="Blended from your recent activity, cart, and the most relevant catalog items."
+              items={recommendedProducts}
+            />
+          </div>
+        )}
+
         <div className="grid gap-8 lg:grid-cols-[260px_1fr]">
           <div className="hidden lg:block">
             <FilterSidebar
@@ -256,9 +372,59 @@ function Index() {
         </div>
       </main>
 
-      <footer className="mt-16 border-t border-border bg-card">
-        <div className="mx-auto max-w-7xl px-4 py-8 text-center text-sm text-muted-foreground md:px-6">
-          EchoCart · 992 products imported from your catalog
+      <footer className="mt-16 border-t border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))]">
+        <div className="mx-auto max-w-7xl px-4 py-12 md:px-6">
+          <div className="grid gap-10 lg:grid-cols-[1.3fr_0.8fr_0.8fr]">
+            <div className="max-w-md space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[image:var(--gradient-hero)] text-primary-foreground shadow-[var(--shadow-card)]">
+                  <span className="text-sm font-bold">EC</span>
+                </div>
+                <div>
+                  <p className="text-lg font-bold tracking-tight text-foreground">
+                    EchoCart
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Smart shopping built around your catalog.
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-sm leading-6 text-muted-foreground">
+                Browse curated products, get explainable recommendations, and
+                keep your shopping flow fast across search, cart, and checkout.
+              </p>
+            </div>
+
+            <div>
+              <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-foreground">
+                Explore
+              </h3>
+              <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
+                <li><Link to="/" className="transition-colors hover:text-foreground">Catalog</Link></li>
+                <li><Link to="/orders" className="transition-colors hover:text-foreground">Orders</Link></li>
+                <li><Link to="/account" className="transition-colors hover:text-foreground">Account</Link></li>
+                <li><Link to="/checkout" className="transition-colors hover:text-foreground">Checkout</Link></li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-foreground">
+                Support
+              </h3>
+              <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
+                <li><Link to="/auth" className="transition-colors hover:text-foreground">Sign in</Link></li>
+                <li><Link to="/" search={{ sort: "popular" }} className="transition-colors hover:text-foreground">Popular picks</Link></li>
+                <li><Link to="/" search={{ sort: "rating_desc" }} className="transition-colors hover:text-foreground">Top rated</Link></li>
+                <li><span className="text-muted-foreground">Fast search and live recommendations</span></li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-10 flex flex-col gap-4 border-t border-border pt-6 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+            <p>EchoCart is designed to feel quick, personal, and explainable.</p>
+            <p>Built for catalog-first ecommerce experiences.</p>
+          </div>
         </div>
       </footer>
     </div>
@@ -270,9 +436,6 @@ function Hero() {
     <section className="bg-[image:var(--gradient-hero)] text-primary-foreground">
       <div className="mx-auto max-w-7xl px-4 py-14 md:px-6 md:py-20">
         <div className="max-w-2xl">
-          <p className="mb-3 text-sm font-medium uppercase tracking-widest text-primary-foreground/80">
-            Fresh catalog · 992 items
-          </p>
           <h1 className="text-3xl font-bold leading-tight md:text-5xl">
             Discover gear, home goods & more — all in one place.
           </h1>

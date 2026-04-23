@@ -4,15 +4,31 @@ import {
   notFound,
   useRouter,
 } from "@tanstack/react-router";
-import { ArrowLeft, Package, Star, Truck } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, Heart, Package, Star, Truck } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
+import { RecommendationSection } from "@/components/RecommendationSection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { fetchProductById, formatPrice } from "@/lib/products";
+import {
+  fetchProductById,
+  fetchRecommendationPool,
+  formatPrice,
+  type Product,
+} from "@/lib/products";
 import { useCart } from "@/hooks/use-cart";
 import { useAuth } from "@/hooks/use-auth";
 import { useNavigate } from "@tanstack/react-router";
+import { useHybridRecommendations } from "@/hooks/use-hybrid-recommendations";
+import { useSessionEvents } from "@/hooks/use-session-events";
+import { useWishlist } from "@/hooks/use-wishlist";
+import { trackPageView, trackProductView } from "@/lib/session-analytics";
+import {
+  deriveSessionSignals,
+  recommendProducts,
+  stripRecommendationImpressions,
+} from "@/lib/recommendations";
 
 export const Route = createFileRoute("/product/$id")({
   loader: async ({ params }) => {
@@ -61,13 +77,92 @@ function ProductPage() {
   const { product } = Route.useLoaderData();
   const router = useRouter();
   const navigate = useNavigate();
-  const { addItem } = useCart();
+  const { addItem, items: cartItems } = useCart();
   const { user } = useAuth();
+  const { isBusy: isWishlistBusy, isWishlisted, toggleWishlist } = useWishlist();
+  const sessionEvents = useSessionEvents();
+  const recommendationEvents = stripRecommendationImpressions(sessionEvents);
+  const [recommendationPool, setRecommendationPool] = useState<Product[]>([]);
   const extra = (product.extra_data ?? {}) as Extra;
   const out = product.stock <= 0;
   const categories: string[] = Array.isArray(product.category)
     ? (product.category as string[])
     : [];
+  const categoryKey = categories.join("|");
+  const trackedProductIds = useRef(new Set<string>());
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecommendationPool()
+      .then((pool) => {
+        if (!cancelled) setRecommendationPool(pool);
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (trackedProductIds.current.has(product.id)) return;
+    trackedProductIds.current.add(product.id);
+
+    trackPageView(`/product/${product.id}`, {
+      userId: user?.id,
+      metadata: {
+        brand: product.brand,
+        category: categories,
+        path: `/product/${product.id}`,
+        price: product.price,
+      },
+    });
+
+    trackProductView(product.id, {
+      userId: user?.id,
+      metadata: {
+        brand: product.brand,
+        category: categories,
+        path: `/product/${product.id}`,
+        price: product.price,
+      },
+    });
+  }, [categories, categoryKey, product.brand, product.id, product.price, user?.id]);
+
+  const sessionSignals = deriveSessionSignals(recommendationEvents);
+  const recentViewedProducts = recommendationPool.filter((candidate) =>
+    sessionSignals.recentProductIds.includes(candidate.id),
+  );
+  const orderProducts = recommendationPool.filter((candidate) =>
+    sessionSignals.orderProductIds.includes(candidate.id),
+  );
+  const clientSimilarProducts = recommendProducts(recommendationPool, {
+    seedProduct: product,
+    recentProducts: [...recentViewedProducts, ...orderProducts],
+    cartProducts: cartItems.map((item) => item.product),
+    orderProducts,
+    searchTerms: sessionSignals.searchTerms,
+    events: recommendationEvents,
+    excludeIds: [product.id],
+    limit: 4,
+  });
+  const { items: similarProducts } = useHybridRecommendations({
+    pool: recommendationPool,
+    context: {
+      seedProduct: product,
+      recentProducts: [...recentViewedProducts, ...orderProducts],
+      cartProducts: cartItems.map((item) => item.product),
+      orderProducts,
+      searchTerms: sessionSignals.searchTerms,
+      events: recommendationEvents,
+      excludeIds: [product.id],
+      limit: 4,
+    },
+    fallback: clientSimilarProducts,
+    enabled: recommendationPool.length > 0,
+  });
 
   const handleAdd = async () => {
     if (!user) {
@@ -85,6 +180,18 @@ function ProductPage() {
     await addItem(product.id, 1);
     navigate({ to: "/checkout" });
   };
+
+  const handleWishlist = async () => {
+    if (!user) {
+      navigate({ to: "/auth", search: { redirect: `/product/${product.id}` } });
+      return;
+    }
+
+    await toggleWishlist(product);
+  };
+
+  const wishlisted = isWishlisted(product.id);
+  const wishlistBusy = isWishlistBusy(product.id);
 
   return (
     <div className="min-h-screen bg-background">
@@ -194,6 +301,17 @@ function ProductPage() {
               </Button>
             </div>
 
+            <Button
+              size="lg"
+              variant={wishlisted ? "secondary" : "outline"}
+              className="w-full"
+              onClick={handleWishlist}
+              disabled={wishlistBusy}
+            >
+              <Heart className={`h-4 w-4 ${wishlisted ? "fill-foreground" : ""}`} />
+              {wishlisted ? "Saved to wishlist" : "Save to wishlist"}
+            </Button>
+
             <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
               <Truck className="h-4 w-4 text-primary" />
               Free shipping on orders over $35
@@ -228,6 +346,16 @@ function ProductPage() {
             <Detail label="Format" value={extra.format} />
           </dl>
         </div>
+
+        {similarProducts.length > 0 && (
+          <div className="mt-12">
+            <RecommendationSection
+              title="More like this"
+              description="Similar items shaped by brand, category, price, and your recent activity."
+              items={similarProducts}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

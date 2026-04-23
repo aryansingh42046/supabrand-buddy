@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
+import { trackPageView } from "@/lib/session-analytics";
 
 export const Route = createFileRoute("/account")({
   component: AccountPage,
@@ -12,10 +13,17 @@ export const Route = createFileRoute("/account")({
 function AccountPage() {
   const { user, loading, signOut } = useAuth();
   const navigate = useNavigate();
+  const trackedAccountView = useRef(false);
 
   useEffect(() => {
     if (!loading && !user) navigate({ to: "/auth", search: { redirect: "/account" } });
   }, [user, loading, navigate]);
+
+  useEffect(() => {
+    if (loading || !user || trackedAccountView.current) return;
+    trackPageView("/account", { userId: user.id });
+    trackedAccountView.current = true;
+  }, [loading, user]);
 
   if (loading || !user) {
     return (

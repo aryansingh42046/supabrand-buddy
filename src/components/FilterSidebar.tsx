@@ -60,7 +60,7 @@ export function FilterSidebar({
       </div>
 
       <FilterGroup title="Category">
-        <div className="space-y-1">
+        <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
           {categories.map((c) => {
             const active = selectedCategory === c.name;
             return (

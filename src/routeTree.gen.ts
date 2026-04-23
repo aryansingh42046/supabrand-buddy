@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProductIdRouteImport } from './routes/product.$id'
@@ -29,6 +30,11 @@ const CheckoutRoute = CheckoutRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ActivityRoute = ActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AccountRoute = AccountRouteImport.update({
@@ -50,6 +56,7 @@ const ProductIdRoute = ProductIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
+  '/activity': typeof ActivityRoute
   '/auth': typeof AuthRoute
   '/checkout': typeof CheckoutRoute
   '/orders': typeof OrdersRoute
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
+  '/activity': typeof ActivityRoute
   '/auth': typeof AuthRoute
   '/checkout': typeof CheckoutRoute
   '/orders': typeof OrdersRoute
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
+  '/activity': typeof ActivityRoute
   '/auth': typeof AuthRoute
   '/checkout': typeof CheckoutRoute
   '/orders': typeof OrdersRoute
@@ -77,16 +86,25 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/account'
+    | '/activity'
     | '/auth'
     | '/checkout'
     | '/orders'
     | '/product/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/account' | '/auth' | '/checkout' | '/orders' | '/product/$id'
+  to:
+    | '/'
+    | '/account'
+    | '/activity'
+    | '/auth'
+    | '/checkout'
+    | '/orders'
+    | '/product/$id'
   id:
     | '__root__'
     | '/'
     | '/account'
+    | '/activity'
     | '/auth'
     | '/checkout'
     | '/orders'
@@ -96,6 +114,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccountRoute: typeof AccountRoute
+  ActivityRoute: typeof ActivityRoute
   AuthRoute: typeof AuthRoute
   CheckoutRoute: typeof CheckoutRoute
   OrdersRoute: typeof OrdersRoute
@@ -125,6 +144,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/activity': {
+      id: '/activity'
+      path: '/activity'
+      fullPath: '/activity'
+      preLoaderRoute: typeof ActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/account': {
       id: '/account'
       path: '/account'
@@ -152,6 +178,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountRoute: AccountRoute,
+  ActivityRoute: ActivityRoute,
   AuthRoute: AuthRoute,
   CheckoutRoute: CheckoutRoute,
   OrdersRoute: OrdersRoute,
@@ -160,3 +187,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

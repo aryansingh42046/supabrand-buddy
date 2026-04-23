@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Package } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 import { formatPrice } from "@/lib/products";
+import { trackPageView } from "@/lib/session-analytics";
 
 type Order = {
   id: string;
@@ -25,6 +26,7 @@ function OrdersPage() {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<Order[]>([]);
   const [busy, setBusy] = useState(true);
+  const trackedOrdersView = useRef(false);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -43,6 +45,12 @@ function OrdersPage() {
         });
     }
   }, [user, loading, navigate]);
+
+  useEffect(() => {
+    if (loading || !user || trackedOrdersView.current) return;
+    trackPageView("/orders", { userId: user.id });
+    trackedOrdersView.current = true;
+  }, [loading, user]);
 
   if (loading || busy) {
     return (

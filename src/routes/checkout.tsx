@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, CreditCard, Loader2, ShoppingBag } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,11 @@ import { useAuth } from "@/hooks/use-auth";
 import { useCart } from "@/hooks/use-cart";
 import { supabase } from "@/integrations/supabase/client";
 import { formatPrice } from "@/lib/products";
+import {
+  trackCheckoutStart,
+  trackOrderPlaced,
+  trackPageView,
+} from "@/lib/session-analytics";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/checkout")({
@@ -25,12 +30,32 @@ function CheckoutPage() {
   const [city, setCity] = useState("");
   const [zip, setZip] = useState("");
   const [busy, setBusy] = useState(false);
+  const checkoutViewTracked = useRef(false);
+  const checkoutStartTracked = useRef(false);
 
   useEffect(() => {
     if (!loading && !user) {
       navigate({ to: "/auth", search: { redirect: "/checkout" } });
     }
   }, [user, loading, navigate]);
+
+  useEffect(() => {
+    if (loading || !user || checkoutViewTracked.current) return;
+    trackPageView("/checkout", {
+      userId: user.id,
+      metadata: { cartCount: items.length, subtotal },
+    });
+    checkoutViewTracked.current = true;
+  }, [items.length, loading, subtotal, user]);
+
+  useEffect(() => {
+    if (loading || !user || items.length === 0 || checkoutStartTracked.current) return;
+    trackCheckoutStart({
+      userId: user.id,
+      metadata: { cartCount: items.length, subtotal },
+    });
+    checkoutStartTracked.current = true;
+  }, [items.length, loading, subtotal, user]);
 
   const shipping = subtotal > 35 ? 0 : 5.99;
   const tax = subtotal * 0.08;
@@ -62,6 +87,14 @@ function CheckoutPage() {
       toast.error(oiErr.message);
       return;
     }
+    trackOrderPlaced(
+      items.map((item) => item.product_id),
+      order.id,
+      {
+        userId: user.id,
+        metadata: { cartCount: items.length, subtotal, total },
+      },
+    );
     await clear();
     setBusy(false);
     toast.success("Order placed! Payment processing will be enabled soon.");

@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable";
 import { useAuth } from "@/hooks/use-auth";
@@ -9,10 +9,15 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ShoppingBag, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { trackPageView } from "@/lib/session-analytics";
+
+type AuthMode = "forgot" | "reset";
+type AuthView = "tabs" | AuthMode;
 
 export const Route = createFileRoute("/auth")({
   validateSearch: (s: Record<string, unknown>) => ({
     redirect: typeof s.redirect === "string" ? s.redirect : "/",
+    mode: s.mode === "forgot" || s.mode === "reset" ? s.mode : undefined,
   }),
   component: AuthPage,
 });
@@ -20,13 +25,49 @@ export const Route = createFileRoute("/auth")({
 function AuthPage() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
-  const { redirect } = Route.useSearch();
+  const { redirect, mode } = Route.useSearch();
+  const trackedAuthView = useRef(false);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+
+  const view: AuthView = recoveryMode || mode === "reset" ? "reset" : mode === "forgot" ? "forgot" : "tabs";
 
   useEffect(() => {
-    if (!loading && user) {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+      }
+    });
+
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!loading && user && view !== "reset") {
       navigate({ to: redirect || "/" });
     }
-  }, [user, loading, redirect, navigate]);
+  }, [user, loading, redirect, navigate, view]);
+
+  useEffect(() => {
+    if (loading || user || trackedAuthView.current) return;
+    trackPageView("/auth", { metadata: { redirect, mode } });
+    trackedAuthView.current = true;
+  }, [loading, redirect, mode, user]);
+
+  const openForgotPassword = () => {
+    navigate({
+      to: "/auth",
+      search: { redirect, mode: "forgot" },
+      replace: true,
+    });
+  };
+
+  const backToSignIn = () => {
+    navigate({
+      to: "/auth",
+      search: { redirect },
+      replace: true,
+    });
+  };
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12">
@@ -39,33 +80,41 @@ function AuthPage() {
         </Link>
 
         <div className="rounded-xl border border-border bg-card p-6 shadow-[var(--shadow-card)]">
-          <Tabs defaultValue="signin">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="signin">Sign in</TabsTrigger>
-              <TabsTrigger value="signup">Sign up</TabsTrigger>
-            </TabsList>
-            <TabsContent value="signin">
-              <SignInForm />
-            </TabsContent>
-            <TabsContent value="signup">
-              <SignUpForm />
-            </TabsContent>
-          </Tabs>
+          {view === "tabs" ? (
+            <>
+              <Tabs defaultValue="signin">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="signin">Sign in</TabsTrigger>
+                  <TabsTrigger value="signup">Sign up</TabsTrigger>
+                </TabsList>
+                <TabsContent value="signin">
+                  <SignInForm onForgotPassword={openForgotPassword} />
+                </TabsContent>
+                <TabsContent value="signup">
+                  <SignUpForm />
+                </TabsContent>
+              </Tabs>
 
-          <div className="my-6 flex items-center gap-3">
-            <div className="h-px flex-1 bg-border" />
-            <span className="text-xs text-muted-foreground">OR</span>
-            <div className="h-px flex-1 bg-border" />
-          </div>
+              <div className="my-6 flex items-center gap-3">
+                <div className="h-px flex-1 bg-border" />
+                <span className="text-xs text-muted-foreground">OR</span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
 
-          <GoogleButton />
+              <GoogleButton />
+            </>
+          ) : view === "forgot" ? (
+            <ForgotPasswordForm redirect={redirect} onBackToSignIn={backToSignIn} />
+          ) : (
+            <ResetPasswordForm redirect={redirect} />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function SignInForm() {
+function SignInForm({ onForgotPassword }: { onForgotPassword: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -89,9 +138,108 @@ function SignInForm() {
         <Label htmlFor="signin-password">Password</Label>
         <Input id="signin-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
       </div>
+      <div className="flex justify-end">
+        <Button type="button" variant="link" className="h-auto px-0 text-xs font-medium" onClick={onForgotPassword}>
+          Forgot password?
+        </Button>
+      </div>
       <Button type="submit" className="w-full" disabled={busy}>
         {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
         Sign in
+      </Button>
+    </form>
+  );
+}
+
+function ForgotPasswordForm({ redirect, onBackToSignIn }: { redirect: string; onBackToSignIn: () => void }) {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth?mode=reset&redirect=${encodeURIComponent(redirect || "/")}`,
+    });
+    setBusy(false);
+    if (error) {
+      toast.error(error.message);
+    } else {
+      toast.success("If that email exists, we sent a reset link.");
+    }
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold text-foreground">Reset your password</h2>
+        <p className="text-sm text-muted-foreground">
+          Enter the email address for your account and we&apos;ll send a password reset link.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="forgot-email">Email</Label>
+        <Input id="forgot-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <Button type="button" variant="ghost" onClick={onBackToSignIn}>
+          Back to sign in
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Send reset link
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function ResetPasswordForm({ redirect }: { redirect: string }) {
+  const navigate = useNavigate();
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    toast.success("Password updated. Redirecting you now.");
+    navigate({ to: redirect || "/" });
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold text-foreground">Set a new password</h2>
+        <p className="text-sm text-muted-foreground">
+          Use the link from your email, then enter a new password below to finish signing back in.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="reset-password">New password</Label>
+        <Input id="reset-password" type="password" autoComplete="new-password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="reset-password-confirm">Confirm password</Label>
+        <Input id="reset-password-confirm" type="password" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+      </div>
+      <Button type="submit" className="w-full" disabled={busy}>
+        {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        Update password
       </Button>
     </form>
   );

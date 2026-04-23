@@ -27,6 +27,44 @@ export type ProductFilters = {
   pageSize?: number;
 };
 
+type ProductRow = Omit<Product, "category"> & {
+  category?: unknown;
+};
+
+function normalizeCategories(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+        }
+      } catch {
+        // Fall back to the raw string below.
+      }
+    }
+
+    return [trimmed];
+  }
+
+  return [];
+}
+
+function normalizeProduct(product: ProductRow): Product {
+  const { category, ...rest } = product;
+  return {
+    ...rest,
+    category: normalizeCategories(category),
+  };
+}
+
 export async function fetchProducts(filters: ProductFilters = {}) {
   const {
     search,
@@ -72,7 +110,7 @@ export async function fetchProducts(filters: ProductFilters = {}) {
 
   const { data, error, count } = await query;
   if (error) throw error;
-  return { products: (data ?? []) as Product[], total: count ?? 0 };
+  return { products: (data ?? []).map((product) => normalizeProduct(product as ProductRow)), total: count ?? 0 };
 }
 
 export async function fetchProductById(id: string) {
@@ -82,7 +120,18 @@ export async function fetchProductById(id: string) {
     .eq("id", id)
     .maybeSingle();
   if (error) throw error;
-  return data as Product | null;
+  return data ? normalizeProduct(data as ProductRow) : null;
+}
+
+export async function fetchRecommendationPool(limit = 250) {
+  const { data, error } = await supabase
+    .from("products")
+    .select("*")
+    .order("reviews_count", { ascending: false })
+    .order("rating", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map((product) => normalizeProduct(product as ProductRow));
 }
 
 export async function fetchFacets() {
@@ -98,7 +147,7 @@ export async function fetchFacets() {
   for (const row of data ?? []) {
     const b = (row as { brand: string | null }).brand;
     if (b && b.trim()) brandCounts.set(b, (brandCounts.get(b) ?? 0) + 1);
-    const cats = (row as { category: string[] | null }).category ?? [];
+    const cats = normalizeCategories((row as { category?: unknown }).category);
     for (const c of cats) {
       if (c && c.trim()) catCounts.set(c, (catCounts.get(c) ?? 0) + 1);
     }

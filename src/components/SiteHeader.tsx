@@ -1,17 +1,24 @@
 import { Link } from "@tanstack/react-router";
 import { ShoppingBag, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { CartDrawer } from "@/components/CartDrawer";
+import { WishlistDrawer } from "@/components/WishlistDrawer";
+import { ShoppingAssistant } from "./ShoppingAssistant";
 import { UserMenu } from "@/components/UserMenu";
+import { useAuth } from "@/hooks/use-auth";
+import { trackSearch } from "@/lib/session-analytics";
 
 export function SiteHeader({ initialSearch = "" }: { initialSearch?: string }) {
   const navigate = useNavigate();
   const [q, setQ] = useState(initialSearch);
+  const { user } = useAuth();
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
+    trackSearch(q, { userId: user?.id, metadata: { source: "header" } });
     navigate({
       to: "/",
       search: (prev: Record<string, unknown>) => ({
@@ -43,6 +50,8 @@ export function SiteHeader({ initialSearch = "" }: { initialSearch?: string }) {
           />
         </form>
         <div className="flex items-center gap-2">
+          <ShoppingAssistant />
+          <WishlistDrawer />
           <CartDrawer />
           <UserMenu />
         </div>

@@ -1,20 +1,19 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { type Product } from "@/lib/products";
+import {
+  trackAddToCart,
+  trackRemoveFromCart,
+  trackUpdateCartQuantity,
+} from "@/lib/session-analytics";
 import { toast } from "sonner";
 
 export type CartItem = {
   id: string;
   product_id: string;
   quantity: number;
-  product: {
-    id: string;
-    name: string;
-    price: number;
-    image_url: string | null;
-    stock: number;
-    brand: string | null;
-  };
+  product: Product;
 };
 
 type CartCtx = {
@@ -54,7 +53,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     const { data, error } = await supabase
       .from("cart_items")
-      .select("id, product_id, quantity, product:products(id, name, price, image_url, stock, brand)")
+      .select("id, product_id, quantity, product:products(id, name, description, price, image_url, category, brand, rating, reviews_count, stock, extra_data, created_at)")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
     setLoading(false);
@@ -86,6 +85,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       toast.error(error.message);
       return;
     }
+    trackAddToCart(productId, qty, { userId: user.id });
     toast.success("Added to cart");
     await refresh();
   };
@@ -97,14 +97,25 @@ export function CartProvider({ children }: { children: ReactNode }) {
       toast.error(error.message);
       return;
     }
+    const updatedItem = items.find((item) => item.id === itemId);
+    if (updatedItem && user) {
+      trackUpdateCartQuantity(updatedItem.product_id, qty, { userId: user.id });
+    }
     await refresh();
   };
 
   const removeItem = async (itemId: string) => {
+    const removedItem = items.find((item) => item.id === itemId);
     const { error } = await supabase.from("cart_items").delete().eq("id", itemId);
     if (error) {
       toast.error(error.message);
       return;
+    }
+    if (removedItem && user) {
+      trackRemoveFromCart(removedItem.product_id, {
+        userId: user.id,
+        metadata: { quantity: removedItem.quantity },
+      });
     }
     await refresh();
   };

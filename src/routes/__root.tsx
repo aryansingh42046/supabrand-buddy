@@ -2,6 +2,7 @@ import { Outlet, Link, createRootRoute, HeadContent, Scripts } from "@tanstack/r
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/hooks/use-auth";
 import { CartProvider } from "@/hooks/use-cart";
+import { WishlistProvider } from "@/hooks/use-wishlist";
 
 import appCss from "../styles.css?url";
 
@@ -60,7 +61,9 @@ function RootComponent() {
   return (
     <AuthProvider>
       <CartProvider>
-        <Outlet />
+        <WishlistProvider>
+          <Outlet />
+        </WishlistProvider>
         <Toaster />
       </CartProvider>
     </AuthProvider>
