@@ -53,7 +53,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     const { data, error } = await supabase
       .from("cart_items")
-      .select("id, product_id, quantity, product:products(id, name, description, price, image_url, category, brand, rating, reviews_count, stock, extra_data, created_at)")
+      .select(
+        "id, product_id, quantity, product:products(id, name, description, price, image_url, category, brand, rating, reviews_count, stock, extra_data, created_at)",
+      )
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
     setLoading(false);
@@ -130,7 +132,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const subtotal = items.reduce((s, i) => s + i.quantity * Number(i.product?.price ?? 0), 0);
 
   return (
-    <Ctx.Provider value={{ items, count, subtotal, loading, addItem, updateQty, removeItem, clear, refresh }}>
+    <Ctx.Provider
+      value={{ items, count, subtotal, loading, addItem, updateQty, removeItem, clear, refresh }}
+    >
       {children}
     </Ctx.Provider>
   );

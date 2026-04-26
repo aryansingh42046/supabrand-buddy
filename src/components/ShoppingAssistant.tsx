@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Loader2, MessageSquareMore, Send, ShoppingBag, Sparkles, Wand2 } from "lucide-react";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -71,7 +78,10 @@ export function ShoppingAssistant() {
   }, [catalog.length, open]);
 
   const cartProducts = useMemo(
-    () => cartItems.map((item) => item.product).filter((product): product is Product => product != null),
+    () =>
+      cartItems
+        .map((item) => item.product)
+        .filter((product): product is Product => product != null),
     [cartItems],
   );
 
@@ -159,7 +169,8 @@ export function ShoppingAssistant() {
                   Shopping Assistant
                 </SheetTitle>
                 <SheetDescription className="mt-2 text-sm leading-6 text-primary-foreground/80">
-                  Ask for recommendations, budget filters, or similar items. It blends your cart, search, and browsing signals into one clear answer.
+                  Ask for recommendations, budget filters, or similar items. It blends your cart,
+                  search, and browsing signals into one clear answer.
                 </SheetDescription>
               </SheetHeader>
 
@@ -177,9 +188,7 @@ export function ShoppingAssistant() {
                   <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary-foreground/70">
                     {stat.label}
                   </p>
-                  <p className="mt-1 text-lg font-semibold text-primary-foreground">
-                    {stat.value}
-                  </p>
+                  <p className="mt-1 text-lg font-semibold text-primary-foreground">{stat.value}</p>
                 </div>
               ))}
             </div>
@@ -216,7 +225,10 @@ export function ShoppingAssistant() {
               const isUser = message.role === "user";
 
               return (
-                <div key={message.id} className={isUser ? "flex justify-end" : "flex justify-start"}>
+                <div
+                  key={message.id}
+                  className={isUser ? "flex justify-end" : "flex justify-start"}
+                >
                   <div
                     className={
                       isUser
@@ -302,15 +314,27 @@ export function ShoppingAssistant() {
 
                               <div className="border-t border-border/70 px-3 py-3">
                                 <p className="line-clamp-2 text-xs text-muted-foreground">
-                                  {reasons.slice(0, 2).map((reason) => reason.detail).join(" | ")}
+                                  {reasons
+                                    .slice(0, 2)
+                                    .map((reason) => reason.detail)
+                                    .join(" | ")}
                                 </p>
 
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  <Button size="sm" className="rounded-full" onClick={() => void addItem(product.id, 1)}>
+                                  <Button
+                                    size="sm"
+                                    className="rounded-full"
+                                    onClick={() => void addItem(product.id, 1)}
+                                  >
                                     <ShoppingBag className="mr-2 h-4 w-4" />
                                     Add to cart
                                   </Button>
-                                  <Button asChild size="sm" variant="outline" className="rounded-full">
+                                  <Button
+                                    asChild
+                                    size="sm"
+                                    variant="outline"
+                                    className="rounded-full"
+                                  >
                                     <Link to="/product/$id" params={{ id: product.id }}>
                                       View product
                                     </Link>
@@ -330,7 +354,11 @@ export function ShoppingAssistant() {
                             key={prompt}
                             variant="outline"
                             size="sm"
-                            className={isUser ? "rounded-full border-primary-foreground/20 bg-primary-foreground/10 text-primary-foreground hover:bg-primary-foreground/15" : "rounded-full"}
+                            className={
+                              isUser
+                                ? "rounded-full border-primary-foreground/20 bg-primary-foreground/10 text-primary-foreground hover:bg-primary-foreground/15"
+                                : "rounded-full"
+                            }
                             onClick={() => sendQuickPrompt(prompt)}
                           >
                             {prompt}
@@ -378,7 +406,12 @@ export function ShoppingAssistant() {
               placeholder="Ask for recommendations, budgets, or similar items..."
               className="h-11 rounded-full border-border/70 bg-background/95 px-4 shadow-sm focus-visible:ring-2 focus-visible:ring-ring"
             />
-            <Button type="submit" size="icon" className="h-11 w-11 rounded-full" disabled={busy || !query.trim()}>
+            <Button
+              type="submit"
+              size="icon"
+              className="h-11 w-11 rounded-full"
+              disabled={busy || !query.trim()}
+            >
               <Send className="h-4 w-4" />
               <span className="sr-only">Send message</span>
             </Button>

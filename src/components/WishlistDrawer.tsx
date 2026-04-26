@@ -37,7 +37,9 @@ export function WishlistDrawer() {
       <SheetContent className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
         <SheetHeader className="border-b border-border p-6">
           <SheetTitle>Your wishlist ({count})</SheetTitle>
-          <SheetDescription>Save items for later and move them to cart when you are ready.</SheetDescription>
+          <SheetDescription>
+            Save items for later and move them to cart when you are ready.
+          </SheetDescription>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto">

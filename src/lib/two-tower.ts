@@ -3,6 +3,7 @@ import { deriveSessionSignals, type RecommendationContext } from "@/lib/recommen
 import { type SessionEvent } from "@/lib/session-analytics";
 
 export const twoTowerEmbeddingSize = 16;
+const MODEL_SIGNATURE = "v2";
 
 export type TwoTowerModel = {
   version: 1;
@@ -59,8 +60,12 @@ const TOKEN_BUCKET_COUNT = twoTowerEmbeddingSize - BASIC_FEATURE_COUNT;
 const DEFAULT_EPOCHS = 4;
 const DEFAULT_LEARNING_RATE = 0.06;
 
-const DEFAULT_ITEM_WEIGHTS = [1.15, 1.1, 1, 1.05, 1.05, 0.9, 0.75, 0.85, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8];
-const DEFAULT_QUERY_WEIGHTS = [1.1, 1.05, 1, 1.1, 1.05, 1, 0.8, 0.9, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85];
+const DEFAULT_ITEM_WEIGHTS = [
+  1.1, 1.08, 0.95, 1.08, 1, 0.92, 0.9, 0.9, 1, 1, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95,
+];
+const DEFAULT_QUERY_WEIGHTS = [
+  1.05, 1, 0.95, 1.1, 1.12, 1.12, 0.95, 0.95, 1, 1, 0.98, 0.98, 0.98, 0.98, 0.98, 0.98,
+];
 
 function clamp01(value: number) {
   if (!Number.isFinite(value)) return 0;
@@ -158,38 +163,86 @@ function productTokens(product: Product) {
   });
 
   return new Set(
-    tokenize([
-      product.name,
-      product.description ?? "",
-      product.brand ?? "",
-      ...product.category,
-      ...extraValues,
-    ].join(" ")),
+    tokenize(
+      [
+        product.name,
+        product.description ?? "",
+        product.brand ?? "",
+        ...product.category,
+        ...extraValues,
+      ].join(" "),
+    ),
   );
 }
 
-function collectContextTokens(context: RecommendationContext) {
-  const tokens = new Set<string>();
+function buildWeightedAnchors(context: RecommendationContext) {
+  const anchors: Array<{ product: Product; weight: number }> = [];
+  const seen = new Set<string>();
 
-  for (const searchTerm of context.searchTerms ?? []) {
-    for (const token of tokenize(searchTerm)) tokens.add(token);
+  const append = (product: Product | undefined | null, weight: number) => {
+    if (!product || seen.has(product.id) || weight <= 0) return;
+    seen.add(product.id);
+    anchors.push({ product, weight });
+  };
+
+  append(context.seedProduct, 2.6);
+
+  for (const [index, product] of (context.cartProducts ?? []).entries()) {
+    append(product, Math.max(1.15, 1.95 - index * 0.18));
   }
 
-  for (const product of uniqueById([
-    context.seedProduct ?? undefined,
-    ...(context.recentProducts ?? []),
-    ...(context.cartProducts ?? []),
-    ...(context.orderProducts ?? []),
-  ].filter((product): product is Product => Boolean(product)))) {
-    for (const token of productTokens(product)) tokens.add(token);
+  for (const [index, product] of (context.orderProducts ?? []).entries()) {
+    append(product, Math.max(1.05, 2.15 - index * 0.16));
   }
 
-  if ((context.cartProducts ?? []).length > 0) tokens.add("cart");
-  if ((context.orderProducts ?? []).length > 0) tokens.add("order");
-  if ((context.recentProducts ?? []).length > 0) tokens.add("recent");
-  if ((context.seedProduct ?? null) !== null) tokens.add("seed");
+  for (const [index, product] of (context.recentProducts ?? []).entries()) {
+    append(product, Math.max(0.45, 1.3 - index * 0.18));
+  }
 
-  return tokens;
+  return anchors;
+}
+
+function buildWeightedContextBatches(context: RecommendationContext) {
+  const batches: WeightedTokenBatch[] = [];
+  const seen = new Set<string>();
+
+  const appendTokens = (product: Product | undefined | null, weight: number) => {
+    if (!product || seen.has(product.id) || weight <= 0) return;
+    seen.add(product.id);
+    batches.push({ tokens: productTokens(product), weight });
+  };
+
+  appendTokens(context.seedProduct, 2.6);
+
+  for (const [index, product] of (context.cartProducts ?? []).entries()) {
+    appendTokens(product, Math.max(1.15, 1.9 - index * 0.18));
+  }
+
+  for (const [index, product] of (context.orderProducts ?? []).entries()) {
+    appendTokens(product, Math.max(1.05, 2.1 - index * 0.16));
+  }
+
+  for (const [index, product] of (context.recentProducts ?? []).entries()) {
+    appendTokens(product, Math.max(0.45, 1.25 - index * 0.16));
+  }
+
+  for (const [index, searchTerm] of (context.searchTerms ?? []).entries()) {
+    const tokens = new Set(tokenize(searchTerm));
+    if (tokens.size > 0) {
+      batches.push({ tokens, weight: Math.max(0.4, 1.6 - index * 0.3) });
+    }
+  }
+
+  if ((context.cartProducts ?? []).length > 0)
+    batches.push({ tokens: new Set(["cart"]), weight: 0.75 });
+  if ((context.orderProducts ?? []).length > 0)
+    batches.push({ tokens: new Set(["order"]), weight: 0.9 });
+  if ((context.recentProducts ?? []).length > 0)
+    batches.push({ tokens: new Set(["recent"]), weight: 0.6 });
+  if ((context.seedProduct ?? null) !== null)
+    batches.push({ tokens: new Set(["seed"]), weight: 1.1 });
+
+  return batches;
 }
 
 function buildStats(pool: Product[], events: SessionEvent[]): TwoTowerStats {
@@ -214,7 +267,10 @@ function buildStats(pool: Product[], events: SessionEvent[]): TwoTowerStats {
     maxReviews = Math.max(maxReviews, product.reviews_count || 0);
     const createdAt = Date.parse(product.created_at);
     if (Number.isFinite(createdAt)) {
-      maxAgeDays = Math.max(maxAgeDays, Math.max(1, Math.ceil((newestTimestamp - createdAt) / 86_400_000)));
+      maxAgeDays = Math.max(
+        maxAgeDays,
+        Math.max(1, Math.ceil((newestTimestamp - createdAt) / 86_400_000)),
+      );
     }
   }
 
@@ -227,8 +283,15 @@ function buildStats(pool: Product[], events: SessionEvent[]): TwoTowerStats {
     if (event.type === "order_placed") weight = 3.2;
     if (event.type === "recommendation_impression") weight = 0.2;
 
+    if (event.type === "recommendation_feedback" && event.metadata?.feedback === "more_like_this") {
+      weight = 1.25;
+    }
+
     if (weight > 0) {
-      productPopularity.set(event.productId, (productPopularity.get(event.productId) ?? 0) + weight);
+      productPopularity.set(
+        event.productId,
+        (productPopularity.get(event.productId) ?? 0) + weight,
+      );
     }
   }
 
@@ -254,31 +317,57 @@ function buildBaseVector() {
   return new Array(twoTowerEmbeddingSize).fill(0);
 }
 
-function addTokenBuckets(vector: number[], tokens: Iterable<string>, scale = 1) {
-  const tokenList = [...tokens].filter(Boolean);
-  if (tokenList.length === 0) return;
+type WeightedTokenBatch = {
+  tokens: Set<string>;
+  weight: number;
+};
 
-  for (const token of tokenList) {
-    const bucket = BASIC_FEATURE_COUNT + bucketIndex(token);
-    vector[bucket] += scale / tokenList.length;
+function addTokenBuckets(vector: number[], batches: WeightedTokenBatch[]) {
+  for (const { tokens, weight } of batches) {
+    const tokenList = [...tokens].filter(Boolean);
+    if (tokenList.length === 0 || weight <= 0) continue;
+
+    for (const token of tokenList) {
+      const bucket = BASIC_FEATURE_COUNT + bucketIndex(token);
+      vector[bucket] += weight / tokenList.length;
+    }
   }
+}
+
+function weightedAverage(values: Array<{ value: number; weight: number }>) {
+  let totalWeight = 0;
+  let total = 0;
+
+  for (const item of values) {
+    if (item.weight <= 0) continue;
+    totalWeight += item.weight;
+    total += item.value * item.weight;
+  }
+
+  return totalWeight > 0 ? total / totalWeight : 0;
 }
 
 function buildItemFeatures(product: Product, stats: TwoTowerStats) {
   const vector = buildBaseVector();
   const createdAt = Date.parse(product.created_at);
-  const ageDays = Number.isFinite(createdAt) ? Math.max(0, (Date.now() - createdAt) / 86_400_000) : stats.maxAgeDays;
+  const ageDays = Number.isFinite(createdAt)
+    ? Math.max(0, (Date.now() - createdAt) / 86_400_000)
+    : stats.maxAgeDays;
   const tokens = productTokens(product);
 
   vector[0] = clamp01(Number(product.rating ?? 0) / 5);
-  vector[1] = clamp01(Math.log1p(Math.max(0, product.reviews_count)) / Math.log1p(stats.maxReviews));
-  vector[2] = clamp01((stats.productPopularity.get(product.id) ?? 0) / Math.max(stats.maxPopularity, 1));
+  vector[1] = clamp01(
+    Math.log1p(Math.max(0, product.reviews_count)) / Math.log1p(stats.maxReviews),
+  );
+  vector[2] = clamp01(
+    (stats.productPopularity.get(product.id) ?? 0) / Math.max(stats.maxPopularity, 1),
+  );
   vector[3] = clamp01(1 - (Number(product.price) - stats.minPrice) / stats.priceRange);
   vector[4] = product.stock > 0 ? 1 : 0;
   vector[5] = clamp01(1 - ageDays / Math.max(stats.maxAgeDays, 1));
   vector[6] = clamp01(tokens.size / 24);
   vector[7] = clamp01(product.category.length / 6);
-  addTokenBuckets(vector, tokens, 1);
+  addTokenBuckets(vector, [{ tokens, weight: 1 }]);
 
   return vector;
 }
@@ -286,28 +375,59 @@ function buildItemFeatures(product: Product, stats: TwoTowerStats) {
 function buildQueryFeatures(context: RecommendationContext, stats: TwoTowerStats) {
   const vector = buildBaseVector();
   const signals = deriveSessionSignals(context.events ?? []);
-  const anchors = uniqueById([
-    context.seedProduct ?? undefined,
-    ...(context.recentProducts ?? []),
-    ...(context.cartProducts ?? []),
-    ...(context.orderProducts ?? []),
-  ].filter((product): product is Product => Boolean(product)));
+  const anchors = buildWeightedAnchors(context);
+  const anchorRatings = anchors.map((anchor) => ({
+    value: clamp01(Number(anchor.product.rating ?? 0) / 5),
+    weight: anchor.weight,
+  }));
+  const anchorReviews = anchors.map((anchor) => ({
+    value: clamp01(
+      Math.log1p(Math.max(0, anchor.product.reviews_count)) / Math.log1p(stats.maxReviews),
+    ),
+    weight: anchor.weight,
+  }));
+  const anchorPopularity = anchors.map((anchor) => ({
+    value: clamp01(
+      (stats.productPopularity.get(anchor.product.id) ?? 0) / Math.max(stats.maxPopularity, 1),
+    ),
+    weight: anchor.weight,
+  }));
+  const anchorPrices = anchors.map((anchor) => ({
+    value: Number(anchor.product.price),
+    weight: anchor.weight,
+  }));
+  const averageAnchorPrice =
+    anchorPrices.length > 0 ? weightedAverage(anchorPrices) : stats.minPrice + stats.priceRange / 2;
 
-  const anchorRatings = anchors.map((product) => clamp01(Number(product.rating ?? 0) / 5));
-  const anchorReviews = anchors.map((product) => clamp01(Math.log1p(Math.max(0, product.reviews_count)) / Math.log1p(stats.maxReviews)));
-  const anchorPopularity = anchors.map((product) => clamp01((stats.productPopularity.get(product.id) ?? 0) / Math.max(stats.maxPopularity, 1)));
-  const anchorPrices = anchors.map((product) => Number(product.price));
-  const averageAnchorPrice = anchorPrices.length > 0 ? average(anchorPrices) : stats.minPrice + stats.priceRange / 2;
-
-  vector[0] = anchorRatings.length > 0 ? average(anchorRatings) : 0.55;
-  vector[1] = anchorReviews.length > 0 ? average(anchorReviews) : 0.45;
-  vector[2] = anchorPopularity.length > 0 ? average(anchorPopularity) : 0.35;
+  vector[0] = anchorRatings.length > 0 ? weightedAverage(anchorRatings) : 0.55;
+  vector[1] = anchorReviews.length > 0 ? weightedAverage(anchorReviews) : 0.45;
+  vector[2] = anchorPopularity.length > 0 ? weightedAverage(anchorPopularity) : 0.35;
   vector[3] = clamp01(1 - (averageAnchorPrice - stats.minPrice) / stats.priceRange);
-  vector[4] = clamp01((signals.cartProductIds.length * 1.4 + signals.orderProductIds.length * 1.8) / 6);
-  vector[5] = clamp01((signals.recentProductIds.length + signals.searchTerms.length) / 8);
-  vector[6] = clamp01(signals.searchTerms.reduce((total, term) => total + tokenize(term).length, 0) / 14);
-  vector[7] = clamp01(anchors.length / 8);
-  addTokenBuckets(vector, collectContextTokens(context), 1);
+  const cartWeight = anchors
+    .filter((anchor) =>
+      (context.cartProducts ?? []).some((product) => product.id === anchor.product.id),
+    )
+    .reduce((sum, anchor) => sum + anchor.weight, 0);
+  const orderWeight = anchors
+    .filter((anchor) =>
+      (context.orderProducts ?? []).some((product) => product.id === anchor.product.id),
+    )
+    .reduce((sum, anchor) => sum + anchor.weight, 0);
+  const recentWeight = anchors
+    .filter((anchor) =>
+      (context.recentProducts ?? []).some((product) => product.id === anchor.product.id),
+    )
+    .reduce((sum, anchor) => sum + anchor.weight, 0);
+  const searchStrength = (context.searchTerms ?? []).reduce(
+    (total, term, index) => total + Math.max(0.35, 1 - index * 0.25) * tokenize(term).length,
+    0,
+  );
+
+  vector[4] = clamp01((cartWeight * 1.2 + orderWeight * 1.45) / 6);
+  vector[5] = clamp01((recentWeight + searchStrength) / 8);
+  vector[6] = clamp01(searchStrength / 14);
+  vector[7] = clamp01(anchors.reduce((sum, anchor) => sum + anchor.weight, 0) / 8);
+  addTokenBuckets(vector, buildWeightedContextBatches(context));
 
   return vector;
 }
@@ -319,7 +439,10 @@ function buildEmbedding(vector: number[], weights: number[]) {
 function buildCatalogFingerprint(pool: Product[]) {
   return pool
     .slice(0, 80)
-    .map((product) => `${product.id}:${Math.round(Number(product.price))}:${product.reviews_count}:${product.stock}`)
+    .map(
+      (product) =>
+        `${product.id}:${Math.round(Number(product.price))}:${product.reviews_count}:${product.stock}`,
+    )
     .join("|");
 }
 
@@ -369,7 +492,9 @@ function buildTrainingExamples(pool: Product[], events: SessionEvent[]) {
 
       if (event.type === "recommendation_impression") {
         const productIds = Array.isArray(event.metadata?.productIds)
-          ? event.metadata.productIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          ? event.metadata.productIds.filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            )
           : [];
 
         for (const productId of productIds) {
@@ -388,6 +513,26 @@ function buildTrainingExamples(pool: Product[], events: SessionEvent[]) {
       const positiveIds: string[] = [];
       let strength = 0;
 
+      if (event.type === "recommendation_feedback" && event.productId) {
+        const feedback = event.metadata?.feedback;
+        const product = productMap.get(event.productId);
+
+        if (feedback === "more_like_this" && product) {
+          positiveIds.push(event.productId);
+          strength = 0.95;
+          recentProducts = recentProducts.some((item) => item.id === event.productId)
+            ? recentProducts
+            : [product, ...recentProducts].slice(0, 5);
+        }
+
+        if (feedback === "not_relevant" && product) {
+          examples.push({ product, context: contextSnapshot, label: 0, strength: 1.05 });
+        }
+
+        history.push(event);
+        continue;
+      }
+
       if (event.type === "product_view" && event.productId) {
         positiveIds.push(event.productId);
         strength = 0.5;
@@ -398,12 +543,16 @@ function buildTrainingExamples(pool: Product[], events: SessionEvent[]) {
         strength = 0.95;
         cartProducts = cartProducts.some((product) => product.id === event.productId)
           ? cartProducts
-          : [productMap.get(event.productId) ?? null, ...cartProducts].filter((product): product is Product => Boolean(product)).slice(0, 5);
+          : [productMap.get(event.productId) ?? null, ...cartProducts]
+              .filter((product): product is Product => Boolean(product))
+              .slice(0, 5);
       }
 
       if (event.type === "order_placed") {
         const productIds = Array.isArray(event.metadata?.productIds)
-          ? event.metadata.productIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          ? event.metadata.productIds.filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            )
           : [];
         positiveIds.push(...productIds);
         strength = 1.35;
@@ -426,7 +575,12 @@ function buildTrainingExamples(pool: Product[], events: SessionEvent[]) {
           ...orderProducts.map((item) => item.id),
         ]);
 
-        const negatives = sampleNegatives(pool, forbiddenIds, 3, `${sessionEvents[0]?.sessionId ?? "session"}:${productId}`);
+        const negatives = sampleNegatives(
+          pool,
+          forbiddenIds,
+          3,
+          `${sessionEvents[0]?.sessionId ?? "session"}:${productId}`,
+        );
 
         examples.push({ product, context: contextSnapshot, label: 1, strength });
 
@@ -434,7 +588,10 @@ function buildTrainingExamples(pool: Product[], events: SessionEvent[]) {
           examples.push({ product: negative, context: contextSnapshot, label: 0, strength: 0.45 });
         }
 
-        recentProducts = [product, ...recentProducts.filter((item) => item.id !== product.id)].slice(0, 5);
+        recentProducts = [
+          product,
+          ...recentProducts.filter((item) => item.id !== product.id),
+        ].slice(0, 5);
 
         const exposure = exposures.get(productId);
         if (exposure) exposure.clicked = true;
@@ -472,8 +629,11 @@ function sampleNegatives(pool: Product[], forbiddenIds: Set<string>, count: numb
 }
 
 function trainModel(pool: Product[], events: SessionEvent[], seedModel?: TwoTowerModel | null) {
-  const fingerprint = buildCatalogFingerprint(pool);
-  let model = seedModel && seedModel.fingerprint === fingerprint ? { ...seedModel } : defaultModel(fingerprint);
+  const fingerprint = `${MODEL_SIGNATURE}:${buildCatalogFingerprint(pool)}`;
+  let model =
+    seedModel && seedModel.fingerprint === fingerprint
+      ? { ...seedModel }
+      : defaultModel(fingerprint);
   const stats = buildStats(pool, events);
   const examples = buildTrainingExamples(pool, events);
 
@@ -494,10 +654,12 @@ function trainModel(pool: Product[], events: SessionEvent[], seedModel?: TwoTowe
         const currentQueryWeight = model.queryWeights[index];
 
         model.itemWeights[index] = clampWeight(
-          currentItemWeight + DEFAULT_LEARNING_RATE * error * itemFeature * queryFeature * currentQueryWeight,
+          currentItemWeight +
+            DEFAULT_LEARNING_RATE * error * itemFeature * queryFeature * currentQueryWeight,
         );
         model.queryWeights[index] = clampWeight(
-          currentQueryWeight + DEFAULT_LEARNING_RATE * error * itemFeature * queryFeature * currentItemWeight,
+          currentQueryWeight +
+            DEFAULT_LEARNING_RATE * error * itemFeature * queryFeature * currentItemWeight,
         );
       }
 
@@ -515,7 +677,11 @@ function trainModel(pool: Product[], events: SessionEvent[], seedModel?: TwoTowe
   return { model, stats };
 }
 
-export function trainTwoTowerModel(pool: Product[], events: SessionEvent[], seedModel?: TwoTowerModel | null) {
+export function trainTwoTowerModel(
+  pool: Product[],
+  events: SessionEvent[],
+  seedModel?: TwoTowerModel | null,
+) {
   return trainModel(pool, events, seedModel);
 }
 
@@ -551,7 +717,8 @@ export function rankTwoTowerCandidates(
     .map((product) => {
       const cachedEmbedding = precomputedEmbeddings?.get(product.id);
       const itemVector = buildItemFeatures(product, stats);
-      const itemEmbedding = cachedEmbedding?.embedding ?? buildEmbedding(itemVector, model.itemWeights);
+      const itemEmbedding =
+        cachedEmbedding?.embedding ?? buildEmbedding(itemVector, model.itemWeights);
       const similarity = cosineSimilarity(queryEmbedding, itemEmbedding);
       const embeddingRecord: TwoTowerEmbeddingRecord = {
         productId: product.id,
@@ -571,7 +738,7 @@ export function rankTwoTowerCandidates(
 
   const available = scored.filter(({ product }) => product.stock > 0);
   const ranked = available.length > 0 ? available : scored;
-  const candidateLimit = Math.max(48, (context.limit ?? 8) * 8);
+  const candidateLimit = Math.max(64, (context.limit ?? 8) * 10);
 
   return {
     candidates: ranked.slice(0, candidateLimit),
@@ -581,5 +748,5 @@ export function rankTwoTowerCandidates(
 }
 
 export function buildTwoTowerFingerprint(pool: Product[]) {
-  return buildCatalogFingerprint(pool);
+  return `${MODEL_SIGNATURE}:${buildCatalogFingerprint(pool)}`;
 }

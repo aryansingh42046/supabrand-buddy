@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { getSessionEvents, subscribeToSessionEvents, type SessionEvent } from "@/lib/session-analytics";
+import {
+  getSessionEvents,
+  subscribeToSessionEvents,
+  type SessionEvent,
+} from "@/lib/session-analytics";
 
 export function useSessionEvents() {
   const [events, setEvents] = useState<SessionEvent[]>(() => getSessionEvents());

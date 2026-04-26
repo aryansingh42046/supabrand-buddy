@@ -36,7 +36,9 @@ function OrdersPage() {
     if (user) {
       supabase
         .from("orders")
-        .select("id, total_amount, status, created_at, order_items(id, product_name, unit_price, quantity)")
+        .select(
+          "id, total_amount, status, created_at, order_items(id, product_name, unit_price, quantity)",
+        )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .then(({ data }) => {
@@ -95,7 +97,9 @@ function OrdersPage() {
                 <ul className="mt-4 space-y-1 border-t border-border pt-4 text-sm text-muted-foreground">
                   {o.order_items?.map((it) => (
                     <li key={it.id} className="flex justify-between">
-                      <span>{it.product_name} × {it.quantity}</span>
+                      <span>
+                        {it.product_name} × {it.quantity}
+                      </span>
                       <span>{formatPrice(Number(it.unit_price) * it.quantity)}</span>
                     </li>
                   ))}

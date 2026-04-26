@@ -1,21 +1,36 @@
 import { useEffect, useRef, useState } from "react";
 import { type Product } from "@/lib/products";
-import { trainHybridRecommendations, type TrainHybridRecommendationsResponse } from "@/lib/recommendations.functions";
-import { stripRecommendationImpressions, type RecommendationContext, type RecommendedProduct } from "@/lib/recommendations";
+import {
+  trainHybridRecommendations,
+  type TrainHybridRecommendationsResponse,
+} from "@/lib/recommendations.functions";
+import {
+  stripRecommendationImpressions,
+  type RecommendationContext,
+  type RecommendedProduct,
+} from "@/lib/recommendations";
 
 function buildRequestKey(pool: Product[], context: RecommendationContext) {
   const events = stripRecommendationImpressions(context.events ?? []);
   const recentIds = context.recentProducts?.map((product) => product.id) ?? [];
   const cartIds = context.cartProducts?.map((product) => product.id) ?? [];
   const orderIds = context.orderProducts?.map((product) => product.id) ?? [];
-  const eventIds = events.map((event) => `${event.id}:${event.type}:${event.timestamp}:${event.productId ?? ""}`);
+  const positiveFeedbackIds = context.positiveFeedbackProductIds ?? [];
+  const negativeFeedbackIds = context.negativeFeedbackProductIds ?? [];
+  const eventIds = events.map(
+    (event) => `${event.id}:${event.type}:${event.timestamp}:${event.productId ?? ""}`,
+  );
 
   return JSON.stringify({
-    pool: pool.map((product) => `${product.id}:${Math.round(Number(product.price))}:${product.stock}`),
+    pool: pool.map(
+      (product) => `${product.id}:${Math.round(Number(product.price))}:${product.stock}`,
+    ),
     seed: context.seedProduct?.id ?? null,
     recentIds,
     cartIds,
     orderIds,
+    positiveFeedbackIds,
+    negativeFeedbackIds,
     searchTerms: context.searchTerms ?? [],
     eventIds,
     excludeIds: context.excludeIds ?? [],
@@ -35,7 +50,10 @@ export function useHybridRecommendations({
   enabled?: boolean;
 }) {
   const [items, setItems] = useState<RecommendedProduct[]>(fallback);
-  const [serverMeta, setServerMeta] = useState<Pick<TrainHybridRecommendationsResponse, "trainedAt" | "count"> | null>(null);
+  const [serverMeta, setServerMeta] = useState<Pick<
+    TrainHybridRecommendationsResponse,
+    "trainedAt" | "count"
+  > | null>(null);
   const requestKey = buildRequestKey(pool, context);
   const fallbackRef = useRef(fallback);
 

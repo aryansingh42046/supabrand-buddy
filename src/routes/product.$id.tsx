@@ -1,11 +1,6 @@
-import {
-  createFileRoute,
-  Link,
-  notFound,
-  useRouter,
-} from "@tanstack/react-router";
+import { createFileRoute, Link, notFound, useRouter } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Heart, Package, Star, Truck } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Heart, Package, ShieldCheck, Star, Truck } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { RecommendationSection } from "@/components/RecommendationSection";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +21,7 @@ import { useWishlist } from "@/hooks/use-wishlist";
 import { trackPageView, trackProductView } from "@/lib/session-analytics";
 import {
   deriveSessionSignals,
+  materializeProductsByIds,
   recommendProducts,
   stripRecommendationImpressions,
 } from "@/lib/recommendations";
@@ -132,32 +128,50 @@ function ProductPage() {
   }, [categories, categoryKey, product.brand, product.id, product.price, user?.id]);
 
   const sessionSignals = deriveSessionSignals(recommendationEvents);
-  const recentViewedProducts = recommendationPool.filter((candidate) =>
-    sessionSignals.recentProductIds.includes(candidate.id),
+  const recentViewedProducts = materializeProductsByIds(
+    recommendationPool,
+    sessionSignals.recentProductIds,
   );
-  const orderProducts = recommendationPool.filter((candidate) =>
-    sessionSignals.orderProductIds.includes(candidate.id),
+  const orderProducts = materializeProductsByIds(
+    recommendationPool,
+    sessionSignals.orderProductIds,
   );
+  const positiveFeedbackProducts = materializeProductsByIds(
+    recommendationPool,
+    sessionSignals.positiveFeedbackProductIds,
+  );
+  const excludedRecommendationIds = [
+    ...new Set([product.id, ...sessionSignals.negativeFeedbackProductIds]),
+  ];
+  const recommendationSeedProducts = [
+    ...recentViewedProducts,
+    ...orderProducts,
+    ...positiveFeedbackProducts,
+  ];
   const clientSimilarProducts = recommendProducts(recommendationPool, {
     seedProduct: product,
-    recentProducts: [...recentViewedProducts, ...orderProducts],
+    recentProducts: recommendationSeedProducts,
     cartProducts: cartItems.map((item) => item.product),
     orderProducts,
     searchTerms: sessionSignals.searchTerms,
     events: recommendationEvents,
-    excludeIds: [product.id],
+    excludeIds: excludedRecommendationIds,
+    positiveFeedbackProductIds: sessionSignals.positiveFeedbackProductIds,
+    negativeFeedbackProductIds: sessionSignals.negativeFeedbackProductIds,
     limit: 4,
   });
   const { items: similarProducts } = useHybridRecommendations({
     pool: recommendationPool,
     context: {
       seedProduct: product,
-      recentProducts: [...recentViewedProducts, ...orderProducts],
+      recentProducts: recommendationSeedProducts,
       cartProducts: cartItems.map((item) => item.product),
       orderProducts,
       searchTerms: sessionSignals.searchTerms,
       events: recommendationEvents,
-      excludeIds: [product.id],
+      excludeIds: excludedRecommendationIds,
+      positiveFeedbackProductIds: sessionSignals.positiveFeedbackProductIds,
+      negativeFeedbackProductIds: sessionSignals.negativeFeedbackProductIds,
       limit: 4,
     },
     fallback: clientSimilarProducts,
@@ -204,8 +218,8 @@ function ProductPage() {
           <ArrowLeft className="h-4 w-4" /> Back
         </button>
 
-        <div className="mt-6 grid gap-8 lg:grid-cols-2">
-          <div className="overflow-hidden rounded-xl border border-border bg-card p-6">
+        <div className="mt-6 grid gap-8 lg:grid-cols-[1.08fr_0.92fr]">
+          <div className="overflow-hidden rounded-[2rem] border border-indigo-100/70 bg-[linear-gradient(180deg,rgba(243,243,255,0.96),rgba(255,255,255,0.98))] p-6 shadow-[var(--shadow-card)]">
             {product.image_url ? (
               <img
                 src={product.image_url}
@@ -219,9 +233,9 @@ function ProductPage() {
             )}
           </div>
 
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 rounded-[2rem] border border-indigo-100/70 bg-white/85 p-6 shadow-[var(--shadow-card)] backdrop-blur lg:sticky lg:top-28">
             {product.brand && (
-              <span className="text-xs font-semibold uppercase tracking-widest text-primary">
+              <span className="inline-flex w-fit items-center rounded-full bg-indigo-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.26em] text-primary">
                 {product.brand}
               </span>
             )}
@@ -253,11 +267,16 @@ function ProductPage() {
             )}
 
             <div className="flex items-baseline gap-3">
-              <span className="text-3xl font-bold text-foreground">
+              <span className="text-4xl font-black tracking-tight text-primary">
                 {formatPrice(Number(product.price))}
               </span>
               {extra.discount && (
-                <Badge variant="secondary">{extra.discount}</Badge>
+                <Badge
+                  variant="secondary"
+                  className="rounded-full border-indigo-100/70 bg-indigo-50 text-primary"
+                >
+                  {extra.discount}
+                </Badge>
               )}
             </div>
 
@@ -275,6 +294,42 @@ function ProductPage() {
               )}
             </div>
 
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-indigo-100/70 bg-indigo-50 px-4 py-3">
+                <div className="flex items-center gap-2 text-primary">
+                  <ShieldCheck className="h-4 w-4" />
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em]">
+                    Secure checkout
+                  </p>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Protected order data and account-aware checkout steps.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-indigo-100/70 bg-indigo-50 px-4 py-3">
+                <div className="flex items-center gap-2 text-primary">
+                  <BadgeCheck className="h-4 w-4" />
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em]">
+                    Buyer protection
+                  </p>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Visible order history and a cleaner path back to support.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-indigo-100/70 bg-indigo-50 px-4 py-3">
+                <div className="flex items-center gap-2 text-primary">
+                  <Truck className="h-4 w-4" />
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em]">Free shipping</p>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Orders over $35 ship free with transparent totals up front.
+                </p>
+              </div>
+            </div>
+
             {categories.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {categories.map((c) => (
@@ -282,7 +337,7 @@ function ProductPage() {
                     key={c}
                     to="/"
                     search={{ category: c }}
-                    className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+                    className="inline-flex items-center rounded-full border border-indigo-100/70 bg-indigo-50 px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-primary"
                   >
                     {c}
                   </Link>
@@ -293,10 +348,16 @@ function ProductPage() {
             <Separator className="my-2" />
 
             <div className="flex gap-3">
-              <Button size="lg" disabled={out} className="flex-1" onClick={handleAdd}>
+              <Button size="lg" disabled={out} className="flex-1 rounded-full" onClick={handleAdd}>
                 {out ? "Unavailable" : "Add to cart"}
               </Button>
-              <Button size="lg" variant="outline" disabled={out} onClick={handleBuyNow}>
+              <Button
+                size="lg"
+                variant="outline"
+                disabled={out}
+                onClick={handleBuyNow}
+                className="rounded-full border-indigo-100/70 bg-white/80"
+              >
                 Buy now
               </Button>
             </div>
@@ -304,7 +365,7 @@ function ProductPage() {
             <Button
               size="lg"
               variant={wishlisted ? "secondary" : "outline"}
-              className="w-full"
+              className="w-full rounded-full"
               onClick={handleWishlist}
               disabled={wishlistBusy}
             >
@@ -312,7 +373,7 @@ function ProductPage() {
               {wishlisted ? "Saved to wishlist" : "Save to wishlist"}
             </Button>
 
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2 rounded-2xl border border-indigo-100/70 bg-indigo-50 px-4 py-3 text-sm text-muted-foreground">
               <Truck className="h-4 w-4 text-primary" />
               Free shipping on orders over $35
             </div>
@@ -321,9 +382,7 @@ function ProductPage() {
 
         {product.description && (
           <div className="mt-12">
-            <h2 className="mb-3 text-lg font-semibold text-foreground">
-              About this item
-            </h2>
+            <h2 className="mb-3 text-lg font-semibold text-foreground">About this item</h2>
             <p className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
               {product.description}
             </p>
@@ -331,10 +390,8 @@ function ProductPage() {
         )}
 
         <div className="mt-12">
-          <h2 className="mb-4 text-lg font-semibold text-foreground">
-            Product details
-          </h2>
-          <dl className="grid grid-cols-1 gap-x-8 gap-y-3 rounded-xl border border-border bg-card p-6 text-sm sm:grid-cols-2">
+          <h2 className="mb-4 text-lg font-semibold text-foreground">Product details</h2>
+          <dl className="grid grid-cols-1 gap-x-8 gap-y-3 rounded-[1.75rem] border border-indigo-100/70 bg-white/82 p-6 text-sm shadow-[var(--shadow-card)] sm:grid-cols-2">
             <Detail label="Brand" value={product.brand} />
             <Detail label="Manufacturer" value={extra.manufacturer} />
             <Detail label="ASIN" value={extra.asin} />

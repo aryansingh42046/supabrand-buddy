@@ -71,7 +71,11 @@ export function CartDrawer() {
                 <li key={item.id} className="flex gap-3 p-4">
                   <div className="h-20 w-20 shrink-0 overflow-hidden rounded-md border border-border bg-muted">
                     {item.product?.image_url ? (
-                      <img src={item.product.image_url} alt={item.product.name} className="h-full w-full object-contain" />
+                      <img
+                        src={item.product.image_url}
+                        alt={item.product.name}
+                        className="h-full w-full object-contain"
+                      />
                     ) : null}
                   </div>
                   <div className="flex flex-1 flex-col gap-1">
@@ -87,7 +91,9 @@ export function CartDrawer() {
                     {item.product?.brand && (
                       <span className="text-xs text-muted-foreground">{item.product.brand}</span>
                     )}
-                    <span className="text-sm font-semibold">{formatPrice(Number(item.product?.price ?? 0))}</span>
+                    <span className="text-sm font-semibold">
+                      {formatPrice(Number(item.product?.price ?? 0))}
+                    </span>
                     <div className="mt-auto flex items-center justify-between">
                       <div className="flex items-center rounded-md border border-border">
                         <button
@@ -129,7 +135,9 @@ export function CartDrawer() {
                 <span>Subtotal</span>
                 <span>{formatPrice(subtotal)}</span>
               </div>
-              <p className="text-xs text-muted-foreground">Shipping and taxes calculated at checkout.</p>
+              <p className="text-xs text-muted-foreground">
+                Shipping and taxes calculated at checkout.
+              </p>
               <SheetClose asChild>
                 <Button asChild className="w-full" size="lg">
                   <Link to="/checkout">Checkout</Link>
@@ -143,7 +151,15 @@ export function CartDrawer() {
   );
 }
 
-function EmptyState({ title, description, cta }: { title: string; description: string; cta: React.ReactNode }) {
+function EmptyState({
+  title,
+  description,
+  cta,
+}: {
+  title: string;
+  description: string;
+  cta: React.ReactNode;
+}) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
       <ShoppingBag className="h-12 w-12 text-muted-foreground/50" />

@@ -55,6 +55,7 @@ const SessionEventSchema: z.ZodType<SessionEvent> = z
       "update_quantity",
       "checkout_start",
       "recommendation_impression",
+      "recommendation_feedback",
       "order_placed",
     ]),
     timestamp: z.string(),
@@ -75,6 +76,8 @@ const RecommendationContextSchema: z.ZodType<RecommendationContext> = z
     searchTerms: z.array(z.string()).optional(),
     events: z.array(SessionEventSchema).optional(),
     excludeIds: z.array(z.string()).optional(),
+    positiveFeedbackProductIds: z.array(z.string()).optional(),
+    negativeFeedbackProductIds: z.array(z.string()).optional(),
     limit: z.number().int().positive().max(24).optional(),
   })
   .passthrough();
@@ -113,9 +116,10 @@ export const trainHybridRecommendations = createServerFn({ method: "POST" })
       cachedTwoTowerState.snapshot.poolSize === data.pool.length &&
       cachedTwoTowerState.embeddingCount === data.pool.length;
 
-    const twoTowerModel = isTwoTowerSnapshotFresh && cachedTwoTowerState
-      ? cachedTwoTowerState.snapshot
-      : trainTwoTowerModel(data.pool, mergedEvents, cachedTwoTowerState?.snapshot ?? null).model;
+    const twoTowerModel =
+      isTwoTowerSnapshotFresh && cachedTwoTowerState
+        ? cachedTwoTowerState.snapshot
+        : trainTwoTowerModel(data.pool, mergedEvents, cachedTwoTowerState?.snapshot ?? null).model;
 
     const { queryEmbedding } = encodeTwoTowerQuery(data.pool, trainingContext, twoTowerModel);
 
@@ -136,7 +140,7 @@ export const trainHybridRecommendations = createServerFn({ method: "POST" })
         fingerprint: twoTowerModel.fingerprint,
         queryEmbedding,
         candidateProductIds,
-        matchCount: Math.max(48, (trainingContext.limit ?? 8) * 8),
+        matchCount: Math.max(64, (trainingContext.limit ?? 8) * 10),
       });
 
       const productMap = new Map(data.pool.map((product) => [product.id, product] as const));
@@ -166,7 +170,10 @@ export const trainHybridRecommendations = createServerFn({ method: "POST" })
 
     const trainedModel = fitHybridModel(data.pool, trainingContext);
     const rankedProducts = getHybridRankings(candidatePool, trainingContext);
-    const items: RecommendedProduct[] = buildRecommendedProductsFromRankings(rankedProducts, trainingContext);
+    const items: RecommendedProduct[] = buildRecommendedProductsFromRankings(
+      rankedProducts,
+      trainingContext,
+    );
 
     await saveHybridModelSnapshot(trainedModel, {
       eventCount: mergedEvents.length,

@@ -1,5 +1,6 @@
 export type SessionEventMetadata = {
   source?: string;
+  feedback?: RecommendationFeedbackValue;
   productIds?: string[];
   quantity?: number;
   orderId?: string;
@@ -20,7 +21,10 @@ export type SessionEventType =
   | "update_quantity"
   | "checkout_start"
   | "recommendation_impression"
+  | "recommendation_feedback"
   | "order_placed";
+
+export type RecommendationFeedbackValue = "more_like_this" | "not_relevant";
 
 export type SessionEvent = {
   id: string;
@@ -36,8 +40,10 @@ export type SessionEvent = {
 
 const SESSION_ID_KEY = "echocart:session-id";
 const SESSION_EVENTS_KEY = "echocart:session-events";
+const RECENT_SEARCHES_KEY = "echocart:recent-searches";
 const SESSION_EVENT_NAME = "echocart:session-event";
 const MAX_EVENTS = 250;
+const MAX_RECENT_SEARCHES = 8;
 
 function isBrowser() {
   return typeof window !== "undefined";
@@ -66,6 +72,17 @@ function writeJson(key: string, value: unknown) {
   window.localStorage.setItem(key, JSON.stringify(value));
 }
 
+function writeRecentSearchQuery(query: string) {
+  const trimmed = query.trim();
+  if (!trimmed) return;
+
+  const recentSearches = getRecentSearchQueries(MAX_RECENT_SEARCHES).filter(
+    (item) => item.toLowerCase() !== trimmed.toLowerCase(),
+  );
+
+  writeJson(RECENT_SEARCHES_KEY, [trimmed, ...recentSearches].slice(0, MAX_RECENT_SEARCHES));
+}
+
 export function getSessionId() {
   if (!isBrowser()) return createId();
   const existing = window.sessionStorage.getItem(SESSION_ID_KEY);
@@ -77,6 +94,10 @@ export function getSessionId() {
 
 export function getSessionEvents() {
   return readJson<SessionEvent[]>(SESSION_EVENTS_KEY, []);
+}
+
+export function getRecentSearchQueries(limit = MAX_RECENT_SEARCHES) {
+  return readJson<string[]>(RECENT_SEARCHES_KEY, []).slice(0, limit);
 }
 
 export function trackSessionEvent(
@@ -147,11 +168,29 @@ export function trackSearch(
   options: { userId?: string; metadata?: SessionEventMetadata } = {},
 ) {
   if (!query.trim()) return null;
+  writeRecentSearchQuery(query);
   return trackSessionEvent({
     type: "search",
     query: query.trim(),
     userId: options.userId,
     metadata: options.metadata,
+  });
+}
+
+export function trackRecommendationFeedback(
+  productId: string,
+  feedback: RecommendationFeedbackValue,
+  options: { userId?: string; section?: string; metadata?: SessionEventMetadata } = {},
+) {
+  return trackSessionEvent({
+    type: "recommendation_feedback",
+    productId,
+    userId: options.userId,
+    metadata: {
+      feedback,
+      section: options.section,
+      ...options.metadata,
+    },
   });
 }
 

@@ -218,7 +218,8 @@ export async function searchTwoTowerCandidates(options: {
     query_embedding: options.queryEmbedding,
     query_fingerprint: options.fingerprint,
     match_count: options.matchCount,
-    candidate_product_ids: options.candidateProductIds.length > 0 ? options.candidateProductIds : null,
+    candidate_product_ids:
+      options.candidateProductIds.length > 0 ? options.candidateProductIds : null,
   });
 
   if (error) {

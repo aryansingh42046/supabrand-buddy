@@ -80,7 +80,8 @@ type RecommendationPersistenceDatabase = {
   };
 };
 
-const supabaseAdmin = rawSupabaseAdmin as unknown as SupabaseClient<RecommendationPersistenceDatabase>;
+const supabaseAdmin =
+  rawSupabaseAdmin as unknown as SupabaseClient<RecommendationPersistenceDatabase>;
 
 const RECENT_EVENT_LIMIT = 2000;
 
@@ -145,17 +146,20 @@ export async function loadHistoricalRecommendationEvents(limit = RECENT_EVENT_LI
   return (data ?? [])
     .slice()
     .reverse()
-    .map((row) => ({
-      id: row.id,
-      sessionId: row.session_id,
-      type: row.event_type as SessionEvent["type"],
-      timestamp: row.event_timestamp,
-      userId: row.user_id ?? undefined,
-      path: row.path ?? undefined,
-      query: row.query ?? undefined,
-      productId: row.product_id ?? undefined,
-      metadata: (row.metadata as SessionEvent["metadata"]) ?? undefined,
-    } satisfies SessionEvent));
+    .map(
+      (row) =>
+        ({
+          id: row.id,
+          sessionId: row.session_id,
+          type: row.event_type as SessionEvent["type"],
+          timestamp: row.event_timestamp,
+          userId: row.user_id ?? undefined,
+          path: row.path ?? undefined,
+          query: row.query ?? undefined,
+          productId: row.product_id ?? undefined,
+          metadata: (row.metadata as SessionEvent["metadata"]) ?? undefined,
+        }) satisfies SessionEvent,
+    );
 }
 
 export async function loadAndPersistRecommendationEvents(events: SessionEvent[]) {

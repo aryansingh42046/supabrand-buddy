@@ -45,6 +45,8 @@ export type HybridContext = {
   searchTerms?: string[];
   events?: SessionEvent[];
   excludeIds?: string[];
+  positiveFeedbackProductIds?: string[];
+  negativeFeedbackProductIds?: string[];
 };
 
 type ModelStats = {
@@ -64,25 +66,26 @@ type TrainingExample = {
 };
 
 const STORAGE_KEY = "echocart:hybrid-model:v1";
+const MODEL_SIGNATURE = "v2";
 const DEFAULT_LEARNING_RATE = 0.12;
 const DEFAULT_EPOCHS = 3;
 
 const DEFAULT_WEIGHTS: Record<HybridFeatureKey, number> = {
-  rating: 0.8,
-  reviews: 0.45,
-  stock: 0.3,
-  availability: 1.2,
-  popularity: 0.65,
-  brand_match: 1.8,
-  category_overlap: 1.45,
-  text_overlap: 1.1,
-  price_similarity: 0.9,
-  search_match: 1.4,
-  recent_affinity: 1.5,
-  cart_affinity: 2.1,
-  order_affinity: 2.35,
-  co_purchase_affinity: 1.85,
-  newness: 0.25,
+  rating: 0.55,
+  reviews: 0.25,
+  stock: 0.25,
+  availability: 1.05,
+  popularity: 0.35,
+  brand_match: 2.15,
+  category_overlap: 2.05,
+  text_overlap: 1.6,
+  price_similarity: 0.8,
+  search_match: 2.35,
+  recent_affinity: 1.9,
+  cart_affinity: 2.55,
+  order_affinity: 2.8,
+  co_purchase_affinity: 2.2,
+  newness: 0.12,
 };
 
 const FEATURE_LABELS: Record<HybridFeatureKey, string> = {
@@ -127,12 +130,7 @@ function tokenize(value: string) {
 }
 
 function productTokens(product: Product) {
-  const raw = [
-    product.name,
-    product.description ?? "",
-    product.brand ?? "",
-    ...product.category,
-  ];
+  const raw = [product.name, product.description ?? "", product.brand ?? "", ...product.category];
 
   const extra = Object.values(product.extra_data ?? {}).flatMap((value) => {
     if (typeof value === "string") return [value];
@@ -182,7 +180,12 @@ function pairKey(a: string, b: string) {
   return a < b ? `${a}::${b}` : `${b}::${a}`;
 }
 
-function incrementPair(map: Map<string, Map<string, number>>, a: string, b: string, amount: number) {
+function incrementPair(
+  map: Map<string, Map<string, number>>,
+  a: string,
+  b: string,
+  amount: number,
+) {
   if (!a || !b || a === b) return;
   const key = pairKey(a, b);
   const left = map.get(key) ?? new Map<string, number>();
@@ -192,7 +195,74 @@ function incrementPair(map: Map<string, Map<string, number>>, a: string, b: stri
 
 function getPairScore(stats: ModelStats, a: string, b: string) {
   const key = pairKey(a, b);
-  return clamp01((stats.pairAffinity.get(key)?.get("score") ?? 0) / Math.max(stats.maxPairAffinity, 1));
+  return clamp01(
+    (stats.pairAffinity.get(key)?.get("score") ?? 0) / Math.max(stats.maxPairAffinity, 1),
+  );
+}
+
+function weightedAverage(values: Array<{ value: number; weight: number }>) {
+  let totalWeight = 0;
+  let total = 0;
+
+  for (const item of values) {
+    if (item.weight <= 0) continue;
+    totalWeight += item.weight;
+    total += item.value * item.weight;
+  }
+
+  return totalWeight > 0 ? total / totalWeight : 0;
+}
+
+function buildWeightedAnchors(context: HybridContext) {
+  const anchors: Anchor[] = [];
+  const seen = new Set<string>();
+
+  const append = (product: Product | undefined | null, weight: number, label: string) => {
+    if (!product || seen.has(product.id) || weight <= 0) return;
+    seen.add(product.id);
+    anchors.push({ product, weight, label });
+  };
+
+  append(context.seedProduct, 2.6, "this product");
+
+  for (const [index, product] of (context.cartProducts ?? []).entries()) {
+    append(product, Math.max(1.15, 1.95 - index * 0.18), "your cart");
+  }
+
+  for (const [index, product] of (context.orderProducts ?? []).entries()) {
+    append(product, Math.max(1.05, 2.15 - index * 0.16), "past purchases");
+  }
+
+  for (const [index, product] of (context.recentProducts ?? []).entries()) {
+    append(product, Math.max(0.45, 1.3 - index * 0.18), "recent activity");
+  }
+
+  return anchors;
+}
+
+function buildWeightedSearchTokens(searchTerms: string[]) {
+  const tokens = new Map<string, number>();
+
+  for (const [index, searchTerm] of searchTerms.entries()) {
+    const termWeight = Math.max(0.35, 1 - index * 0.25);
+    for (const token of tokenize(searchTerm)) {
+      tokens.set(token, Math.max(tokens.get(token) ?? 0, termWeight));
+    }
+  }
+
+  return tokens;
+}
+
+function weightedTokenOverlap(tokens: Set<string>, weightedTokens: Map<string, number>) {
+  if (tokens.size === 0 || weightedTokens.size === 0) return 0;
+
+  let matched = 0;
+  let total = 0;
+
+  for (const weight of weightedTokens.values()) total += weight;
+  for (const token of tokens) matched += weightedTokens.get(token) ?? 0;
+
+  return clamp01(matched / Math.max(total, 1));
 }
 
 function buildFingerprint(pool: Product[], events: SessionEvent[]) {
@@ -204,7 +274,7 @@ function buildFingerprint(pool: Product[], events: SessionEvent[]) {
     .slice(-64)
     .map((event) => `${event.id}:${event.type}:${event.timestamp}`)
     .join("|");
-  return `${pool.length}:${productFingerprint}::${events.length}:${eventFingerprint}`;
+  return `${MODEL_SIGNATURE}:${pool.length}:${productFingerprint}::${events.length}:${eventFingerprint}`;
 }
 
 function defaultModel(fingerprint: string): HybridModel {
@@ -259,7 +329,10 @@ function buildStats(pool: Product[], events: SessionEvent[]): ModelStats {
     maxReviews = Math.max(maxReviews, product.reviews_count || 0);
     const createdAt = Date.parse(product.created_at);
     if (Number.isFinite(createdAt)) {
-      maxAgeDays = Math.max(maxAgeDays, Math.max(1, Math.ceil((newestTimestamp - createdAt) / 86_400_000)));
+      maxAgeDays = Math.max(
+        maxAgeDays,
+        Math.max(1, Math.ceil((newestTimestamp - createdAt) / 86_400_000)),
+      );
     }
   }
 
@@ -289,7 +362,9 @@ function buildStats(pool: Product[], events: SessionEvent[]): ModelStats {
 
       if (event.type === "order_placed") {
         const productIds = Array.isArray(event.metadata?.productIds)
-          ? event.metadata.productIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          ? event.metadata.productIds.filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            )
           : [];
         for (const productId of productIds) {
           engagedIds.add(productId);
@@ -300,10 +375,22 @@ function buildStats(pool: Product[], events: SessionEvent[]): ModelStats {
 
       if (event.type === "recommendation_impression") {
         const productIds = Array.isArray(event.metadata?.productIds)
-          ? event.metadata.productIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          ? event.metadata.productIds.filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            )
           : [];
         for (const productId of productIds) {
           productPopularity.set(productId, (productPopularity.get(productId) ?? 0) + 0.2);
+        }
+      }
+
+      if (event.type === "recommendation_feedback" && event.productId) {
+        if (event.metadata?.feedback === "more_like_this") {
+          engagedIds.add(event.productId);
+          productPopularity.set(
+            event.productId,
+            (productPopularity.get(event.productId) ?? 0) + 1.25,
+          );
         }
       }
     }
@@ -351,7 +438,9 @@ function snapshotContext(context: HybridContext): HybridContext {
     recentProducts: uniqueById(context.recentProducts ?? []),
     cartProducts: uniqueById(context.cartProducts ?? []),
     orderProducts: uniqueById(context.orderProducts ?? []),
-    searchTerms: [...new Set((context.searchTerms ?? []).map((term) => term.trim()).filter(Boolean))],
+    searchTerms: [
+      ...new Set((context.searchTerms ?? []).map((term) => term.trim()).filter(Boolean)),
+    ],
     events: context.events,
     excludeIds: context.excludeIds,
   };
@@ -395,7 +484,9 @@ function buildExamples(pool: Product[], events: SessionEvent[], stats: ModelStat
 
       if (event.type === "recommendation_impression") {
         const productIds = Array.isArray(event.metadata?.productIds)
-          ? event.metadata.productIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          ? event.metadata.productIds.filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            )
           : [];
         for (const productId of productIds) {
           exposures.push({ productId, context: contextSnapshot, clicked: false });
@@ -411,6 +502,30 @@ function buildExamples(pool: Product[], events: SessionEvent[], stats: ModelStat
       const positiveIds: string[] = [];
       let strength = 0;
 
+      if (event.type === "recommendation_feedback" && event.productId) {
+        const feedback = event.metadata?.feedback;
+        const product = productMap.get(event.productId);
+
+        if (feedback === "more_like_this" && product) {
+          positiveIds.push(event.productId);
+          strength = 0.95;
+          recentProducts = recentProducts.some((item) => item.id === event.productId)
+            ? recentProducts
+            : [product, ...recentProducts].slice(0, 5);
+        }
+
+        if (feedback === "not_relevant" && product) {
+          examples.push({
+            product,
+            context: contextSnapshot,
+            label: 0,
+            strength: 1.05,
+          });
+        }
+
+        continue;
+      }
+
       if (event.type === "product_view" && event.productId) {
         positiveIds.push(event.productId);
         strength = 0.45;
@@ -421,12 +536,16 @@ function buildExamples(pool: Product[], events: SessionEvent[], stats: ModelStat
         strength = 0.9;
         cartProducts = cartProducts.some((product) => product.id === event.productId)
           ? cartProducts
-          : [productMap.get(event.productId) ?? null, ...cartProducts].filter((product): product is Product => Boolean(product)).slice(0, 5);
+          : [productMap.get(event.productId) ?? null, ...cartProducts]
+              .filter((product): product is Product => Boolean(product))
+              .slice(0, 5);
       }
 
       if (event.type === "order_placed") {
         const productIds = Array.isArray(event.metadata?.productIds)
-          ? event.metadata.productIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          ? event.metadata.productIds.filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            )
           : [];
         positiveIds.push(...productIds);
         strength = 1.3;
@@ -542,66 +661,116 @@ function buildFeatureVector(
   stats: ModelStats,
   productMap: Map<string, Product>,
 ) {
-  const seed = context.seedProduct ?? null;
-  const recentProducts = uniqueById([seed, ...(context.recentProducts ?? [])].filter((item): item is Product => Boolean(item)));
-  const cartProducts = uniqueById(context.cartProducts ?? []);
-  const orderProducts = uniqueById(context.orderProducts ?? []);
+  const anchors = buildWeightedAnchors(context);
   const searchTerms = (context.searchTerms ?? []).map((term) => term.trim()).filter(Boolean);
-  const allAnchors = uniqueById([...recentProducts, ...cartProducts, ...orderProducts]);
+  const searchTokenWeights = buildWeightedSearchTokens(searchTerms);
 
   const productTokenSet = productTokens(product);
-  const textSimilarity = allAnchors.length
-    ? average(
-        allAnchors.map((anchor) => {
-          const anchorTokens = productTokens(anchor);
+  const textSimilarity = anchors.length
+    ? weightedAverage(
+        anchors.map((anchor) => {
+          const anchorTokens = productTokens(anchor.product);
           const overlap = [...productTokenSet].filter((token) => anchorTokens.has(token)).length;
-          return overlap / Math.max(1, Math.min(productTokenSet.size, anchorTokens.size));
+          return {
+            value: overlap / Math.max(1, Math.min(productTokenSet.size, anchorTokens.size)),
+            weight: anchor.weight,
+          };
         }),
       )
     : 0;
 
-  const brandMatch = allAnchors.some((anchor) => anchor.brand && product.brand && normalizeText(anchor.brand) === normalizeText(product.brand))
-    ? 1
+  const brandMatch = anchors.length
+    ? weightedAverage(
+        anchors.map((anchor) => ({
+          value:
+            anchor.product.brand &&
+            product.brand &&
+            normalizeText(anchor.product.brand) === normalizeText(product.brand)
+              ? 1
+              : 0,
+          weight: anchor.weight,
+        })),
+      )
     : 0;
 
-  const categoryOverlap = allAnchors.length
-    ? Math.max(
-        ...allAnchors.map((anchor) => {
-          const anchorSet = new Set(anchor.category.map(normalizeText).filter(Boolean));
+  const categoryOverlap = anchors.length
+    ? weightedAverage(
+        anchors.map((anchor) => {
+          const anchorSet = new Set(anchor.product.category.map(normalizeText).filter(Boolean));
           const productSet = new Set(product.category.map(normalizeText).filter(Boolean));
           const intersection = [...productSet].filter((token) => anchorSet.has(token)).length;
           const union = new Set([...productSet, ...anchorSet]).size || 1;
-          return intersection / union;
+          return { value: intersection / union, weight: anchor.weight };
         }),
       )
     : 0;
 
-  const priceSimilarity = allAnchors.length
-    ? average(
-        allAnchors.map((anchor) => {
-          const scale = Math.max(Number(product.price), Number(anchor.price), 1);
-          return 1 - Math.min(1, Math.abs(Number(product.price) - Number(anchor.price)) / scale);
+  const priceSimilarity = anchors.length
+    ? weightedAverage(
+        anchors.map((anchor) => {
+          const scale = Math.max(Number(product.price), Number(anchor.product.price), 1);
+          return {
+            value:
+              1 -
+              Math.min(1, Math.abs(Number(product.price) - Number(anchor.product.price)) / scale),
+            weight: anchor.weight,
+          };
         }),
       )
     : 0;
 
-  const searchTokens = new Set(searchTerms.flatMap(tokenize));
-  const searchMatch = searchTokens.size
-    ? [...productTokenSet].filter((token) => searchTokens.has(token)).length / Math.max(1, Math.min(productTokenSet.size, searchTokens.size))
+  const searchMatch = weightedTokenOverlap(productTokenSet, searchTokenWeights);
+
+  const recentAnchors = anchors.filter((anchor) => anchor.label === "recent activity");
+  const cartAnchors = anchors.filter((anchor) => anchor.label === "your cart");
+  const orderAnchors = anchors.filter((anchor) => anchor.label === "past purchases");
+
+  const recentAffinity = recentAnchors.length
+    ? weightedAverage(
+        recentAnchors.map((anchor) => ({
+          value: getPairScore(stats, product.id, anchor.product.id),
+          weight: anchor.weight,
+        })),
+      )
+    : 0;
+  const cartAffinity = cartAnchors.length
+    ? weightedAverage(
+        cartAnchors.map((anchor) => ({
+          value: getPairScore(stats, product.id, anchor.product.id),
+          weight: anchor.weight,
+        })),
+      )
+    : 0;
+  const orderAffinity = orderAnchors.length
+    ? weightedAverage(
+        orderAnchors.map((anchor) => ({
+          value: getPairScore(stats, product.id, anchor.product.id),
+          weight: anchor.weight,
+        })),
+      )
+    : 0;
+  const coPurchaseAffinity = anchors.length
+    ? weightedAverage(
+        anchors.map((anchor) => ({
+          value: getPairScore(stats, product.id, anchor.product.id),
+          weight: anchor.weight,
+        })),
+      )
     : 0;
 
-  const recentAffinity = average((context.recentProducts ?? []).map((anchor) => getPairScore(stats, product.id, anchor.id)));
-  const cartAffinity = average((context.cartProducts ?? []).map((anchor) => getPairScore(stats, product.id, anchor.id)));
-  const orderAffinity = average((context.orderProducts ?? []).map((anchor) => getPairScore(stats, product.id, anchor.id)));
-  const coPurchaseAffinity = average(allAnchors.map((anchor) => getPairScore(stats, product.id, anchor.id)));
-
-  const popularity = clamp01((stats.productPopularity.get(product.id) ?? 0) / Math.max(stats.maxPopularity, 1));
-  const reviews = clamp01(Math.log1p(Math.max(0, product.reviews_count)) / Math.log1p(Math.max(1, stats.maxReviews)));
+  const popularity = clamp01(
+    (stats.productPopularity.get(product.id) ?? 0) / Math.max(stats.maxPopularity, 1),
+  );
+  const reviews = clamp01(
+    Math.log1p(Math.max(0, product.reviews_count)) / Math.log1p(Math.max(1, stats.maxReviews)),
+  );
   const rating = clamp01(Math.max(0, Number(product.rating ?? 0)) / 5);
   const stock = clamp01(Math.min(20, Math.max(0, Number(product.stock ?? 0))) / 20);
   const availability = product.stock > 0 ? 1 : 0;
   const createdAt = Date.parse(product.created_at);
-  const ageDays = Number.isFinite(createdAt) ? Math.max(0, (Date.now() - createdAt) / 86_400_000) : 0;
+  const ageDays = Number.isFinite(createdAt)
+    ? Math.max(0, (Date.now() - createdAt) / 86_400_000)
+    : 0;
   const newness = clamp01(1 - ageDays / Math.max(1, stats.maxAgeDays));
 
   return {
@@ -623,7 +792,10 @@ function buildFeatureVector(
   } satisfies Record<HybridFeatureKey, number>;
 }
 
-function dotProduct(weights: Record<HybridFeatureKey, number>, vector: Record<HybridFeatureKey, number>) {
+function dotProduct(
+  weights: Record<HybridFeatureKey, number>,
+  vector: Record<HybridFeatureKey, number>,
+) {
   return hybridFeatureKeys.reduce((sum, key) => sum + weights[key] * vector[key], 0);
 }
 
@@ -645,7 +817,9 @@ function trainModel(pool: Product[], events: SessionEvent[]) {
       const error = (example.label - prediction) * example.strength;
 
       for (const key of hybridFeatureKeys) {
-        model.weights[key] = clampWeight(model.weights[key] + DEFAULT_LEARNING_RATE * error * features[key]);
+        model.weights[key] = clampWeight(
+          model.weights[key] + DEFAULT_LEARNING_RATE * error * features[key],
+        );
       }
       model.bias = clampWeight(model.bias + DEFAULT_LEARNING_RATE * error);
       model.updateCount += 1;

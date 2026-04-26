@@ -1,6 +1,11 @@
 import { formatPrice, type Product } from "@/lib/products";
 import { type SessionEvent } from "@/lib/session-analytics";
-import { explainContribution, getHybridRankings, type HybridContribution, type HybridContext } from "@/lib/hybrid-model";
+import {
+  explainContribution,
+  getHybridRankings,
+  type HybridContribution,
+  type HybridContext,
+} from "@/lib/hybrid-model";
 
 export type RecommendationReason = {
   label: string;
@@ -21,6 +26,8 @@ export type RecommendationContext = {
   searchTerms?: string[];
   events?: SessionEvent[];
   excludeIds?: string[];
+  positiveFeedbackProductIds?: string[];
+  negativeFeedbackProductIds?: string[];
   limit?: number;
 };
 
@@ -28,11 +35,18 @@ export type SessionSignals = {
   recentProductIds: string[];
   cartProductIds: string[];
   orderProductIds: string[];
+  positiveFeedbackProductIds: string[];
+  negativeFeedbackProductIds: string[];
   searchTerms: string[];
 };
 
 export function stripRecommendationImpressions(events: SessionEvent[]) {
   return events.filter((event) => event.type !== "recommendation_impression");
+}
+
+export function materializeProductsByIds(pool: Product[], ids: string[]) {
+  const lookup = new Map(pool.map((product) => [product.id, product] as const));
+  return ids.map((id) => lookup.get(id)).filter((product): product is Product => Boolean(product));
 }
 
 type RankedProduct = {
@@ -168,7 +182,10 @@ function reasonFromContribution(
     case "order_affinity":
       return { label: "Past purchases", detail: "Related to items you bought before" };
     case "co_purchase_affinity":
-      return { label: "Frequently bought together", detail: "Strong collaborative signal from your activity" };
+      return {
+        label: "Frequently bought together",
+        detail: "Strong collaborative signal from your activity",
+      };
     case "popularity":
       return { label: "Popular pick", detail: "Shoppers engage with this item often" };
     case "rating":
@@ -177,7 +194,10 @@ function reasonFromContribution(
         : { label: explainContribution(contribution.key), detail: "High rating" };
     case "reviews":
       return product.reviews_count > 0
-        ? { label: "Trusted by shoppers", detail: `${product.reviews_count.toLocaleString()} reviews` }
+        ? {
+            label: "Trusted by shoppers",
+            detail: `${product.reviews_count.toLocaleString()} reviews`,
+          }
         : { label: explainContribution(contribution.key), detail: "Review signal" };
     case "stock":
       return { label: "Stock available", detail: `${product.stock} left in stock` };
@@ -312,6 +332,23 @@ function scoreCandidate(product: Product, anchors: Anchor[], searchTerms: string
 }
 
 export function recommendProducts(pool: Product[], context: RecommendationContext = {}) {
+  const excludedIds = new Set(context.excludeIds ?? []);
+  for (const product of [
+    context.seedProduct,
+    ...(context.recentProducts ?? []),
+    ...(context.cartProducts ?? []),
+    ...(context.orderProducts ?? []),
+  ]) {
+    if (product) excludedIds.add(product.id);
+  }
+
+  for (const productId of [
+    ...(context.positiveFeedbackProductIds ?? []),
+    ...(context.negativeFeedbackProductIds ?? []),
+  ]) {
+    if (productId) excludedIds.add(productId);
+  }
+
   const hybridContext: HybridContext = {
     seedProduct: context.seedProduct,
     recentProducts: context.recentProducts,
@@ -319,7 +356,9 @@ export function recommendProducts(pool: Product[], context: RecommendationContex
     orderProducts: context.orderProducts,
     searchTerms: context.searchTerms,
     events: context.events,
-    excludeIds: context.excludeIds,
+    excludeIds: [...excludedIds],
+    positiveFeedbackProductIds: context.positiveFeedbackProductIds,
+    negativeFeedbackProductIds: context.negativeFeedbackProductIds,
   };
 
   const ranked = getHybridRankings(pool, hybridContext).slice(0, context.limit ?? 8);
@@ -331,28 +370,53 @@ function collectSignalIds(events: SessionEvent[]) {
   const recentProductIds: string[] = [];
   const cartProductIds: string[] = [];
   const orderProductIds: string[] = [];
+  const positiveFeedbackProductIds: string[] = [];
+  const negativeFeedbackProductIds: string[] = [];
   const searchTerms: string[] = [];
 
   for (const event of [...events].reverse()) {
-    if (event.type === "product_view" && event.productId && !recentProductIds.includes(event.productId)) {
+    if (
+      event.type === "product_view" &&
+      event.productId &&
+      !recentProductIds.includes(event.productId)
+    ) {
       recentProductIds.push(event.productId);
     }
 
-    if (event.type === "add_to_cart" && event.productId && !cartProductIds.includes(event.productId)) {
+    if (
+      event.type === "add_to_cart" &&
+      event.productId &&
+      !cartProductIds.includes(event.productId)
+    ) {
       cartProductIds.push(event.productId);
     }
 
     if (event.type === "search" && event.query) {
       const query = event.query.trim();
-      if (query && !searchTerms.some((existing) => normalizeText(existing) === normalizeText(query))) {
+      if (
+        query &&
+        !searchTerms.some((existing) => normalizeText(existing) === normalizeText(query))
+      ) {
         searchTerms.push(query);
+      }
+    }
+
+    if (event.type === "recommendation_feedback" && event.productId) {
+      const feedback = event.metadata?.feedback;
+      if (feedback === "more_like_this" && !positiveFeedbackProductIds.includes(event.productId)) {
+        positiveFeedbackProductIds.push(event.productId);
+      }
+      if (feedback === "not_relevant" && !negativeFeedbackProductIds.includes(event.productId)) {
+        negativeFeedbackProductIds.push(event.productId);
       }
     }
 
     if (event.type === "order_placed") {
       const productIdsValue = event.metadata?.productIds;
       const productIds = Array.isArray(productIdsValue)
-        ? productIdsValue.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        ? productIdsValue.filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          )
         : [];
 
       for (const productId of productIds) {
@@ -367,6 +431,8 @@ function collectSignalIds(events: SessionEvent[]) {
     recentProductIds: recentProductIds.slice(0, 5),
     cartProductIds: cartProductIds.slice(0, 5),
     orderProductIds: orderProductIds.slice(0, 10),
+    positiveFeedbackProductIds: positiveFeedbackProductIds.slice(0, 5),
+    negativeFeedbackProductIds: negativeFeedbackProductIds.slice(0, 5),
     searchTerms: searchTerms.slice(0, 3),
   } satisfies SessionSignals;
 }

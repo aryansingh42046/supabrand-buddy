@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { LogOut, Package, User as UserIcon } from "lucide-react";
+import { BarChart3, LogOut, Package, SlidersHorizontal, User as UserIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -28,7 +28,8 @@ export function UserMenu() {
     );
   }
 
-  const name = (user.user_metadata?.full_name as string | undefined) || user.email?.split("@")[0] || "Account";
+  const name =
+    (user.user_metadata?.full_name as string | undefined) || user.email?.split("@")[0] || "Account";
   const initial = name.charAt(0).toUpperCase();
 
   return (
@@ -50,6 +51,18 @@ export function UserMenu() {
           <Link to="/orders" className="flex w-full cursor-pointer items-center">
             <Package className="mr-2 h-4 w-4" />
             My orders
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link to="/activity" className="flex w-full cursor-pointer items-center">
+            <BarChart3 className="mr-2 h-4 w-4" />
+            Analytics dashboard
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link to="/admin" className="flex w-full cursor-pointer items-center">
+            <SlidersHorizontal className="mr-2 h-4 w-4" />
+            Merch dashboard
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>

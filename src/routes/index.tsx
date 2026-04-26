@@ -29,6 +29,7 @@ import {
 import { trackPageView } from "@/lib/session-analytics";
 import {
   deriveSessionSignals,
+  materializeProductsByIds,
   recommendProducts,
   stripRecommendationImpressions,
 } from "@/lib/recommendations";
@@ -39,9 +40,7 @@ const searchSchema = z.object({
   category: z.string().optional(),
   minRating: z.coerce.number().optional(),
   maxPrice: z.coerce.number().optional(),
-  sort: z
-    .enum(["relevance", "price_asc", "price_desc", "rating_desc", "popular"])
-    .optional(),
+  sort: z.enum(["relevance", "price_asc", "price_desc", "rating_desc", "popular"]).optional(),
   page: z.coerce.number().optional(),
 });
 
@@ -172,41 +171,63 @@ function Index() {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const sessionSignals = deriveSessionSignals(recommendationEvents);
-  const recentViewedProducts = recommendationPool.filter((product) =>
-    sessionSignals.recentProductIds.includes(product.id),
+  const recentViewedProducts = materializeProductsByIds(
+    recommendationPool,
+    sessionSignals.recentProductIds,
   );
-  const orderProducts = recommendationPool.filter((product) =>
-    sessionSignals.orderProductIds.includes(product.id),
+  const orderProducts = materializeProductsByIds(
+    recommendationPool,
+    sessionSignals.orderProductIds,
   );
+  const positiveFeedbackProducts = materializeProductsByIds(
+    recommendationPool,
+    sessionSignals.positiveFeedbackProductIds,
+  );
+  const excludedRecommendationIds = [
+    ...new Set([
+      ...products.map((product) => product.id),
+      ...sessionSignals.negativeFeedbackProductIds,
+    ]),
+  ];
+  const recommendationSeedProducts = [
+    ...recentViewedProducts,
+    ...orderProducts,
+    ...positiveFeedbackProducts,
+  ];
   const clientRecommendedProducts = recommendProducts(recommendationPool, {
-    recentProducts: [...recentViewedProducts, ...orderProducts],
+    recentProducts: recommendationSeedProducts,
     cartProducts: cartItems.map((item) => item.product),
     orderProducts,
-    searchTerms: search.search ? [search.search, ...sessionSignals.searchTerms] : sessionSignals.searchTerms,
+    searchTerms: search.search
+      ? [search.search, ...sessionSignals.searchTerms]
+      : sessionSignals.searchTerms,
     events: recommendationEvents,
-    excludeIds: products.map((product) => product.id),
+    excludeIds: excludedRecommendationIds,
+    positiveFeedbackProductIds: sessionSignals.positiveFeedbackProductIds,
+    negativeFeedbackProductIds: sessionSignals.negativeFeedbackProductIds,
     limit: 8,
   });
   const { items: recommendedProducts } = useHybridRecommendations({
     pool: recommendationPool,
     context: {
-      recentProducts: [...recentViewedProducts, ...orderProducts],
+      recentProducts: recommendationSeedProducts,
       cartProducts: cartItems.map((item) => item.product),
       orderProducts,
-      searchTerms: search.search ? [search.search, ...sessionSignals.searchTerms] : sessionSignals.searchTerms,
+      searchTerms: search.search
+        ? [search.search, ...sessionSignals.searchTerms]
+        : sessionSignals.searchTerms,
       events: recommendationEvents,
-      excludeIds: products.map((product) => product.id),
+      excludeIds: excludedRecommendationIds,
+      positiveFeedbackProductIds: sessionSignals.positiveFeedbackProductIds,
+      negativeFeedbackProductIds: sessionSignals.negativeFeedbackProductIds,
       limit: 8,
     },
     fallback: clientRecommendedProducts,
     enabled: recommendationPool.length > 0,
   });
   const showRecommendations =
-    !search.search &&
-    !search.brand &&
-    !search.category &&
-    !search.minRating &&
-    !search.maxPrice;
+    !search.search && !search.brand && !search.category && !search.minRating && !search.maxPrice;
+  const featuredBrands = facets.brands.slice(0, 4);
 
   const setSort = (val: string) =>
     router.navigate({
@@ -226,13 +247,19 @@ function Index() {
 
   return (
     <div className="min-h-screen bg-background">
-      <SiteHeader initialSearch={search.search ?? ""} />
+      <SiteHeader
+        initialSearch={search.search ?? ""}
+        quickSearches={[
+          ...facets.categories.slice(0, 4).map((category) => category.name),
+          ...facets.brands.slice(0, 4).map((brand) => brand.name),
+        ]}
+      />
 
       {!search.search &&
         !search.brand &&
         !search.category &&
         !search.minRating &&
-        !search.maxPrice && <Hero />}
+        !search.maxPrice && <Hero brands={featuredBrands} />}
 
       <main className="mx-auto max-w-7xl px-4 py-8 md:px-6">
         {showRecommendations && recommendedProducts.length > 0 && (
@@ -258,72 +285,74 @@ function Index() {
           </div>
 
           <section>
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h1 className="text-xl font-bold text-foreground md:text-2xl">
-                  {search.category ??
-                    search.brand ??
-                    (search.search
-                      ? `Results for "${search.search}"`
-                      : "All products")}
-                </h1>
-                <p className="text-sm text-muted-foreground">
-                  {loading
-                    ? "Loading…"
-                    : `${total.toLocaleString()} ${total === 1 ? "product" : "products"}`}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Sheet>
-                  <SheetTrigger asChild>
-                    <Button variant="outline" size="sm" className="lg:hidden">
-                      <SlidersHorizontal className="mr-2 h-4 w-4" />
-                      Filters
-                    </Button>
-                  </SheetTrigger>
-                  <SheetContent side="left" className="w-[300px] overflow-y-auto">
-                    <div className="mt-6">
-                      <FilterSidebar
-                        brands={facets.brands}
-                        categories={facets.categories}
-                        selectedBrand={search.brand}
-                        selectedCategory={search.category}
-                        minRating={search.minRating}
-                        maxPrice={search.maxPrice}
-                      />
-                    </div>
-                  </SheetContent>
-                </Sheet>
-                <ArrowUpDown className="hidden h-4 w-4 text-muted-foreground sm:block" />
-                <Select value={search.sort ?? "relevance"} onValueChange={setSort}>
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="relevance">Top rated</SelectItem>
-                    <SelectItem value="popular">Most reviewed</SelectItem>
-                    <SelectItem value="price_asc">Price: low to high</SelectItem>
-                    <SelectItem value="price_desc">Price: high to low</SelectItem>
-                    <SelectItem value="rating_desc">Highest rating</SelectItem>
-                  </SelectContent>
-                </Select>
+            <div className="mb-6 rounded-[2rem] border border-indigo-100/70 bg-white/82 p-4 shadow-[var(--shadow-card)] backdrop-blur-xl">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h1 className="text-xl font-bold text-foreground md:text-2xl">
+                    {search.category ??
+                      search.brand ??
+                      (search.search ? `Results for "${search.search}"` : "All products")}
+                  </h1>
+                  <p className="text-sm text-muted-foreground">
+                    {loading
+                      ? "Loading…"
+                      : `${total.toLocaleString()} ${total === 1 ? "product" : "products"}`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Sheet>
+                    <SheetTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-full border-indigo-100/70 bg-white/90 lg:hidden"
+                      >
+                        <SlidersHorizontal className="mr-2 h-4 w-4" />
+                        Filters
+                      </Button>
+                    </SheetTrigger>
+                    <SheetContent
+                      side="left"
+                      className="w-[320px] overflow-y-auto bg-background/98"
+                    >
+                      <div className="mt-6">
+                        <FilterSidebar
+                          brands={facets.brands}
+                          categories={facets.categories}
+                          selectedBrand={search.brand}
+                          selectedCategory={search.category}
+                          minRating={search.minRating}
+                          maxPrice={search.maxPrice}
+                        />
+                      </div>
+                    </SheetContent>
+                  </Sheet>
+                  <ArrowUpDown className="hidden h-4 w-4 text-muted-foreground sm:block" />
+                  <Select value={search.sort ?? "relevance"} onValueChange={setSort}>
+                    <SelectTrigger className="w-[180px] rounded-full border-indigo-100/70 bg-white/90 shadow-none">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="relevance">Top rated</SelectItem>
+                      <SelectItem value="popular">Most reviewed</SelectItem>
+                      <SelectItem value="price_asc">Price: low to high</SelectItem>
+                      <SelectItem value="price_desc">Price: high to low</SelectItem>
+                      <SelectItem value="rating_desc">Highest rating</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </div>
 
             {loading ? (
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {Array.from({ length: 8 }).map((_, i) => (
-                  <div
-                    key={i}
-                    className="aspect-[3/4] animate-pulse rounded-xl bg-muted"
-                  />
+                  <div key={i} className="aspect-[3/4] animate-pulse rounded-[1.9rem] bg-muted" />
                 ))}
               </div>
             ) : products.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-border p-12 text-center">
-                <p className="text-lg font-medium text-foreground">
-                  No products found
-                </p>
+              <div className="rounded-[2rem] border border-dashed border-indigo-100/70 bg-white/80 p-12 text-center shadow-[var(--shadow-card)] backdrop-blur">
+                <p className="text-lg font-medium text-foreground">No products found</p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Try adjusting your filters or search.
                 </p>
@@ -337,7 +366,7 @@ function Index() {
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                   {products.map((p) => (
                     <ProductCard key={p.id} product={p} />
                   ))}
@@ -372,56 +401,123 @@ function Index() {
         </div>
       </main>
 
-      <footer className="mt-16 border-t border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))]">
+      <footer className="mt-16 border-t border-indigo-100/70 bg-[linear-gradient(180deg,rgba(249,249,255,0.98),rgba(255,255,255,0.96))] dark:bg-[linear-gradient(180deg,rgba(14,18,26,0.98),rgba(18,22,32,0.98))]">
         <div className="mx-auto max-w-7xl px-4 py-12 md:px-6">
-          <div className="grid gap-10 lg:grid-cols-[1.3fr_0.8fr_0.8fr]">
+          <div className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              {
+                title: "Buyer protection",
+                text: "Confident checkout, safer purchases, clear order flows.",
+              },
+              {
+                title: "Daily deals",
+                text: "Use search, filters, and recommendations to find fast-moving offers.",
+              },
+              {
+                title: "Wishlist support",
+                text: "Save items for later and return when you are ready.",
+              },
+              {
+                title: "Smart discovery",
+                text: "Behavior-aware ranking that learns from browsing and carts.",
+              },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="rounded-[1.6rem] border border-indigo-100/70 bg-white/82 p-4 shadow-[var(--shadow-card)] backdrop-blur"
+              >
+                <p className="text-sm font-semibold text-foreground">{item.title}</p>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.text}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-10 lg:grid-cols-[1.2fr_0.8fr_0.8fr]">
             <div className="max-w-md space-y-4">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[image:var(--gradient-hero)] text-primary-foreground shadow-[var(--shadow-card)]">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[image:var(--gradient-hero)] text-primary-foreground shadow-[var(--shadow-card)]">
                   <span className="text-sm font-bold">EC</span>
                 </div>
                 <div>
-                  <p className="text-lg font-bold tracking-tight text-foreground">
-                    EchoCart
-                  </p>
+                  <p className="text-lg font-bold tracking-tight text-foreground">EchoCart</p>
                   <p className="text-sm text-muted-foreground">
-                    Smart shopping built around your catalog.
+                    Marketplace-style shopping built around your catalog.
                   </p>
                 </div>
               </div>
 
               <p className="text-sm leading-6 text-muted-foreground">
-                Browse curated products, get explainable recommendations, and
-                keep your shopping flow fast across search, cart, and checkout.
+                Browse curated products, get explainable recommendations, and keep your shopping
+                flow fast across search, cart, wishlist, and checkout.
               </p>
             </div>
 
             <div>
-              <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-foreground">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-foreground">
                 Explore
               </h3>
               <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
-                <li><Link to="/" className="transition-colors hover:text-foreground">Catalog</Link></li>
-                <li><Link to="/orders" className="transition-colors hover:text-foreground">Orders</Link></li>
-                <li><Link to="/account" className="transition-colors hover:text-foreground">Account</Link></li>
-                <li><Link to="/checkout" className="transition-colors hover:text-foreground">Checkout</Link></li>
+                <li>
+                  <Link to="/" className="transition-colors hover:text-foreground">
+                    Catalog
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/orders" className="transition-colors hover:text-foreground">
+                    Orders
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/account" className="transition-colors hover:text-foreground">
+                    Account
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/checkout" className="transition-colors hover:text-foreground">
+                    Checkout
+                  </Link>
+                </li>
               </ul>
             </div>
 
             <div>
-              <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-foreground">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-foreground">
                 Support
               </h3>
               <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
-                <li><Link to="/auth" className="transition-colors hover:text-foreground">Sign in</Link></li>
-                <li><Link to="/" search={{ sort: "popular" }} className="transition-colors hover:text-foreground">Popular picks</Link></li>
-                <li><Link to="/" search={{ sort: "rating_desc" }} className="transition-colors hover:text-foreground">Top rated</Link></li>
-                <li><span className="text-muted-foreground">Fast search and live recommendations</span></li>
+                <li>
+                  <Link to="/auth" className="transition-colors hover:text-foreground">
+                    Sign in
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    to="/"
+                    search={{ sort: "popular" }}
+                    className="transition-colors hover:text-foreground"
+                  >
+                    Popular picks
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    to="/"
+                    search={{ sort: "rating_desc" }}
+                    className="transition-colors hover:text-foreground"
+                  >
+                    Top rated
+                  </Link>
+                </li>
+                <li>
+                  <span className="text-muted-foreground">
+                    Fast search and live recommendations
+                  </span>
+                </li>
               </ul>
             </div>
           </div>
 
-          <div className="mt-10 flex flex-col gap-4 border-t border-border pt-6 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+          <div className="mt-10 flex flex-col gap-4 border-t border-indigo-100/70 pt-6 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
             <p>EchoCart is designed to feel quick, personal, and explainable.</p>
             <p>Built for catalog-first ecommerce experiences.</p>
           </div>
@@ -431,18 +527,83 @@ function Index() {
   );
 }
 
-function Hero() {
+function Hero({ brands }: { brands: { name: string; count: number }[] }) {
   return (
-    <section className="bg-[image:var(--gradient-hero)] text-primary-foreground">
-      <div className="mx-auto max-w-7xl px-4 py-14 md:px-6 md:py-20">
-        <div className="max-w-2xl">
-          <h1 className="text-3xl font-bold leading-tight md:text-5xl">
-            Discover gear, home goods & more — all in one place.
-          </h1>
-          <p className="mt-4 text-base text-primary-foreground/90 md:text-lg">
-            Browse curated products with rich details: live stock counts, ratings,
-            reviews, and full descriptions pulled straight from your catalog.
-          </p>
+    <section className="mx-auto max-w-7xl px-4 pt-6 md:px-6 md:pt-8">
+      <div className="relative overflow-hidden rounded-[2.5rem] border border-indigo-100/70 bg-[image:var(--gradient-hero)] text-primary-foreground shadow-[var(--shadow-card)]">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.28),transparent_30%),radial-gradient(circle_at_bottom_left,rgba(255,255,255,0.12),transparent_28%)]" />
+        <div className="relative grid gap-8 px-5 py-10 md:px-8 md:py-14 lg:grid-cols-[1.15fr_0.85fr] lg:items-center lg:px-10 lg:py-16">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-primary-foreground/20 bg-primary-foreground/12 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-primary-foreground/90">
+              Curated marketplace
+            </div>
+            <h1 className="mt-4 max-w-2xl text-4xl font-black leading-[0.95] md:text-6xl">
+              A cleaner storefront for faster shopping.
+            </h1>
+            <p className="mt-4 max-w-xl text-sm leading-7 text-primary-foreground/88 md:text-base">
+              Browse curated products, save items, and jump between search, filters,
+              recommendations, and checkout in a calmer blue interface.
+            </p>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Button
+                asChild
+                className="rounded-full bg-primary-foreground px-5 text-foreground shadow-[0_12px_30px_-18px_rgba(0,0,0,0.5)] hover:bg-white"
+              >
+                <Link to="/">Shop catalog</Link>
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+            <div className="rounded-[1.8rem] border border-primary-foreground/15 bg-primary-foreground/12 p-5 backdrop-blur">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.26em] text-primary-foreground/70">
+                Deal spotlight
+              </p>
+              <p className="mt-3 text-3xl font-black tracking-tight">Up to 70% off</p>
+              <p className="mt-2 text-sm leading-6 text-primary-foreground/82">
+                Feature your strongest offers without overcrowding the page.
+              </p>
+            </div>
+
+            <div className="rounded-[1.8rem] border border-primary-foreground/15 bg-card/95 p-5 text-foreground shadow-[var(--shadow-card)]">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.26em] text-primary">
+                Top brand
+              </p>
+              <p className="mt-3 text-lg font-semibold text-foreground">
+                {brands[0]?.name ?? "Top brands"}
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {brands.length > 0
+                  ? `${brands[0].count.toLocaleString()} curated picks from the most active sellers.`
+                  : "Browse fast-moving products across every category."}
+              </p>
+            </div>
+
+            <div className="rounded-[1.8rem] border border-primary-foreground/15 bg-primary-foreground/12 p-5 backdrop-blur sm:col-span-2 lg:col-span-1 xl:col-span-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.26em] text-primary-foreground/70">
+                    Smarter flow
+                  </p>
+                  <p className="mt-2 text-lg font-semibold">
+                    Saved wishlist, explainable picks, and faster checkout
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs text-primary-foreground/90">
+                  <span className="rounded-full bg-primary-foreground/12 px-3 py-1">
+                    Express delivery
+                  </span>
+                  <span className="rounded-full bg-primary-foreground/12 px-3 py-1">
+                    Live tracking
+                  </span>
+                  <span className="rounded-full bg-primary-foreground/12 px-3 py-1">
+                    Wishlist sync
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>

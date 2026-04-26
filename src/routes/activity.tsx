@@ -1,22 +1,21 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  BarChart3,
   Activity,
   Clock3,
   Database,
   Laptop,
   RefreshCw,
+  Search,
+  ThumbsDown,
+  ThumbsUp,
+  TrendingUp,
 } from "lucide-react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/hooks/use-auth";
 import { useSessionEvents } from "@/hooks/use-session-events";
@@ -30,6 +29,7 @@ export const Route = createFileRoute("/activity")({
 const STORAGE_MAP = [
   { label: "Browser session", value: "localStorage: echocart:session-events" },
   { label: "Session id", value: "sessionStorage: echocart:session-id" },
+  { label: "Recent searches", value: "localStorage: echocart:recent-searches" },
   { label: "Supabase table", value: "public.recommendation_events" },
   { label: "Wishlist table", value: "public.wishlist_items" },
   { label: "Hybrid model", value: "public.hybrid_model_snapshots" },
@@ -45,6 +45,7 @@ const EVENT_LABELS: Record<SessionEvent["type"], string> = {
   update_quantity: "Update quantity",
   checkout_start: "Checkout start",
   recommendation_impression: "Recommendation impression",
+  recommendation_feedback: "Recommendation feedback",
   order_placed: "Order placed",
 };
 
@@ -91,6 +92,18 @@ function ActivityPage() {
   const latestLiveEvent = liveEvents[0] ?? null;
   const latestPersistedEvent = persistedEvents[0] ?? null;
   const sessionLabel = sessionId ? shortenId(sessionId) : "loading...";
+  const analyticsEvents = useMemo(() => {
+    const lookup = new Map<string, SessionEvent>();
+
+    for (const event of [...browserEvents, ...savedEvents]) {
+      lookup.set(event.id, event);
+    }
+
+    return [...lookup.values()].sort(
+      (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
+    );
+  }, [browserEvents, savedEvents]);
+  const analyticsSummary = useMemo(() => buildAnalyticsSummary(analyticsEvents), [analyticsEvents]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -107,11 +120,11 @@ function ActivityPage() {
                 </div>
                 <div>
                   <h1 className="text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                    See every click, search, and cart action in one place.
+                    See every click, search, feedback, and cart action in one place.
                   </h1>
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
-                    This page shows the browser events the app captures right away, plus the actions that
-                    get written to Supabase for recommendations.
+                    This page shows the browser events the app captures right away, plus the
+                    actions, feedback, and model signals that get written to Supabase.
                   </p>
                 </div>
 
@@ -132,9 +145,7 @@ function ActivityPage() {
                     <Link to="/">Back to catalog</Link>
                   </Button>
                   <Button asChild variant="outline" className="rounded-full border-border/70">
-                    <Link to="/">
-                      Open catalog
-                    </Link>
+                    <Link to="/">Open catalog</Link>
                   </Button>
                 </div>
 
@@ -159,13 +170,14 @@ function ActivityPage() {
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
                   {STORAGE_MAP.map((item) => (
-                    <div key={item.label} className="rounded-2xl border border-border/70 bg-background/80 px-3 py-3">
+                    <div
+                      key={item.label}
+                      className="rounded-2xl border border-border/70 bg-background/80 px-3 py-3"
+                    >
                       <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
                         {item.label}
                       </p>
-                      <p className="mt-1 font-mono text-xs text-foreground">
-                        {item.value}
-                      </p>
+                      <p className="mt-1 font-mono text-xs text-foreground">{item.value}</p>
                     </div>
                   ))}
                 </CardContent>
@@ -197,10 +209,109 @@ function ActivityPage() {
           <MetricCard
             label="Latest browser action"
             value={latestLiveEvent ? EVENT_LABELS[latestLiveEvent.type] : "No action yet"}
-            description={latestLiveEvent ? describeEvent(latestLiveEvent) : "Start browsing to see actions appear here."}
+            description={
+              latestLiveEvent
+                ? describeEvent(latestLiveEvent)
+                : "Start browsing to see actions appear here."
+            }
             icon={<Activity className="h-5 w-5" />}
           />
         </div>
+
+        <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="Searches tracked"
+            value={analyticsSummary.searchCount}
+            description="Searches that can feed discovery and recall."
+            icon={<Search className="h-5 w-5" />}
+          />
+          <MetricCard
+            label="Search success rate"
+            value={`${Math.round(analyticsSummary.searchSuccessRate * 100)}%`}
+            description="Searches followed by product or cart engagement."
+            icon={<TrendingUp className="h-5 w-5" />}
+          />
+          <MetricCard
+            label="Recommendation feedback"
+            value={`${analyticsSummary.positiveFeedbackCount} / ${analyticsSummary.negativeFeedbackCount}`}
+            description="More-like-this vs not-relevant reactions."
+            icon={<ThumbsUp className="h-5 w-5" />}
+          />
+          <MetricCard
+            label="Top category"
+            value={analyticsSummary.topCategory ?? "N/A"}
+            description={
+              analyticsSummary.topCategoryCount > 0
+                ? `${analyticsSummary.topCategoryCount} tracked actions`
+                : "No category activity yet"
+            }
+            icon={<BarChart3 className="h-5 w-5" />}
+          />
+        </div>
+
+        <Card className="mt-8 border-border/70 bg-card/80 shadow-sm">
+          <CardHeader className="pb-4">
+            <CardTitle className="text-lg">Discovery insights</CardTitle>
+            <CardDescription>
+              Recent search intent and category activity collected from this session.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-2xl border border-border/70 bg-background/80 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Top searches
+              </p>
+              <div className="mt-3 space-y-2">
+                {analyticsSummary.topSearchTerms.length > 0 ? (
+                  analyticsSummary.topSearchTerms.map((item) => (
+                    <div
+                      key={item.label}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="truncate font-medium text-foreground">{item.label}</span>
+                      <Badge
+                        variant="secondary"
+                        className="rounded-full border-border/70 px-2 py-1 text-[10px]"
+                      >
+                        {item.count}
+                      </Badge>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">No search terms captured yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border/70 bg-background/80 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Top categories
+              </p>
+              <div className="mt-3 space-y-2">
+                {analyticsSummary.topCategories.length > 0 ? (
+                  analyticsSummary.topCategories.map((item) => (
+                    <div
+                      key={item.label}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="truncate font-medium text-foreground">{item.label}</span>
+                      <Badge
+                        variant="outline"
+                        className="rounded-full border-border/70 px-2 py-1 text-[10px] text-muted-foreground"
+                      >
+                        {item.count}
+                      </Badge>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No category activity captured yet.
+                  </p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="mt-8 grid gap-6">
           <ActionStreamCard
@@ -234,7 +345,9 @@ function ActivityPage() {
                 .catch((error) => {
                   if (requestId.current !== currentRequest) return;
                   setSavedEvents([]);
-                  setSavedError(error instanceof Error ? error.message : "Failed to load saved actions");
+                  setSavedError(
+                    error instanceof Error ? error.message : "Failed to load saved actions",
+                  );
                 })
                 .finally(() => {
                   if (requestId.current === currentRequest) {
@@ -249,16 +362,16 @@ function ActivityPage() {
           <CardHeader className="pb-4">
             <CardTitle className="text-lg">What to show someone</CardTitle>
             <CardDescription>
-              Use the browser section to prove the actions are captured live, then use the Supabase section
-              to show what has been stored for recommendations.
+              Use the browser section to prove the actions are captured live, then use the Supabase
+              section to show what has been stored for recommendations.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-muted-foreground">
             <div className="rounded-2xl border border-border/70 bg-background/80 px-3 py-3">
               <p className="font-medium text-foreground">1. Browser trail</p>
               <p className="mt-1">
-                Every page view, search, product click, and cart change is written to the browser session log
-                first.
+                Every page view, search, product click, and cart change is written to the browser
+                session log first.
               </p>
             </div>
             <div className="rounded-2xl border border-border/70 bg-background/80 px-3 py-3">
@@ -271,8 +384,8 @@ function ActivityPage() {
             <div className="rounded-2xl border border-border/70 bg-background/80 px-3 py-3">
               <p className="font-medium text-foreground">3. Raw payload</p>
               <p className="mt-1">
-                Open any event card to reveal the full JSON payload, which makes it easy to explain the exact
-                stored data.
+                Open any event card to reveal the full JSON payload, which makes it easy to explain
+                the exact stored data.
               </p>
             </div>
           </CardContent>
@@ -312,7 +425,9 @@ function ActionStreamCard({
             {storageBadge}
           </div>
           <CardTitle className="mt-3 text-xl">{title}</CardTitle>
-          <CardDescription className="mt-2 max-w-2xl text-sm leading-6">{description}</CardDescription>
+          <CardDescription className="mt-2 max-w-2xl text-sm leading-6">
+            {description}
+          </CardDescription>
         </div>
 
         <div className="flex items-center gap-2">
@@ -320,7 +435,12 @@ function ActionStreamCard({
             {events.length} events
           </Badge>
           {onRefresh && (
-            <Button variant="outline" size="sm" className="rounded-full border-border/70" onClick={onRefresh}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full border-border/70"
+              onClick={onRefresh}
+            >
               <RefreshCw className="mr-2 h-4 w-4" />
               Refresh
             </Button>
@@ -367,10 +487,15 @@ function EventCard({ event }: { event: SessionEvent }) {
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary" className="rounded-full border-border/70 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em]">
+            <Badge
+              variant="secondary"
+              className="rounded-full border-border/70 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em]"
+            >
               {EVENT_LABELS[event.type]}
             </Badge>
-            <span className="text-xs text-muted-foreground">{formatTimestamp(event.timestamp)}</span>
+            <span className="text-xs text-muted-foreground">
+              {formatTimestamp(event.timestamp)}
+            </span>
           </div>
 
           <p className="mt-2 text-sm font-medium text-foreground">{describeEvent(event)}</p>
@@ -378,7 +503,11 @@ function EventCard({ event }: { event: SessionEvent }) {
           {chips.length > 0 ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {chips.map((chip) => (
-                <Badge key={chip} variant="outline" className="rounded-full border-border/70 px-2.5 py-1 text-[11px] text-muted-foreground">
+                <Badge
+                  key={chip}
+                  variant="outline"
+                  className="rounded-full border-border/70 px-2.5 py-1 text-[11px] text-muted-foreground"
+                >
                   {chip}
                 </Badge>
               ))}
@@ -393,7 +522,9 @@ function EventCard({ event }: { event: SessionEvent }) {
       </div>
 
       <details className="mt-4 rounded-xl border border-border/70 bg-background/70 p-3">
-        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Raw JSON</summary>
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+          Raw JSON
+        </summary>
         <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-foreground">
           {JSON.stringify(event, null, 2)}
         </pre>
@@ -421,7 +552,9 @@ function MetricCard({
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-sm font-medium text-muted-foreground">{label}</p>
-            <p className={`mt-2 text-2xl font-semibold text-foreground ${mono ? "font-mono text-lg" : ""}`}>
+            <p
+              className={`mt-2 text-2xl font-semibold text-foreground ${mono ? "font-mono text-lg" : ""}`}
+            >
               {value}
             </p>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>
@@ -441,6 +574,12 @@ function buildChips(event: SessionEvent) {
   if (event.path) chips.push(event.path);
   if (event.query) chips.push(`Query: ${event.query}`);
   if (event.productId) chips.push(`Product: ${shortenId(event.productId)}`);
+
+  if (event.type === "recommendation_feedback" && typeof event.metadata?.feedback === "string") {
+    chips.push(
+      `Feedback: ${event.metadata.feedback === "more_like_this" ? "More like this" : "Not relevant"}`,
+    );
+  }
 
   if (typeof event.metadata?.quantity === "number") {
     chips.push(`Qty: ${event.metadata.quantity}`);
@@ -478,20 +617,141 @@ function describeEvent(event: SessionEvent) {
     case "product_view":
       return event.productId ? `Viewed product ${shortenId(event.productId)}` : "Viewed a product";
     case "add_to_cart":
-      return event.productId ? `Added product ${shortenId(event.productId)} to cart` : "Added an item to cart";
+      return event.productId
+        ? `Added product ${shortenId(event.productId)} to cart`
+        : "Added an item to cart";
     case "remove_from_cart":
-      return event.productId ? `Removed product ${shortenId(event.productId)} from cart` : "Removed an item from cart";
+      return event.productId
+        ? `Removed product ${shortenId(event.productId)} from cart`
+        : "Removed an item from cart";
     case "update_quantity":
-      return event.productId ? `Changed quantity for ${shortenId(event.productId)}` : "Updated a cart quantity";
+      return event.productId
+        ? `Changed quantity for ${shortenId(event.productId)}`
+        : "Updated a cart quantity";
     case "checkout_start":
       return "Started checkout";
     case "recommendation_impression":
-      return event.metadata?.section ? `Saw recommendations in ${event.metadata.section}` : "Saw recommendations";
+      return event.metadata?.section
+        ? `Saw recommendations in ${event.metadata.section}`
+        : "Saw recommendations";
+    case "recommendation_feedback":
+      if (event.metadata?.feedback === "more_like_this") {
+        return event.productId
+          ? `Marked product ${shortenId(event.productId)} as more like this`
+          : "Liked a recommendation";
+      }
+      if (event.metadata?.feedback === "not_relevant") {
+        return event.productId
+          ? `Marked product ${shortenId(event.productId)} as not relevant`
+          : "Dismissed a recommendation";
+      }
+      return "Gave recommendation feedback";
     case "order_placed":
-      return event.metadata?.orderId ? `Placed order ${shortenId(event.metadata.orderId)}` : "Placed an order";
+      return event.metadata?.orderId
+        ? `Placed order ${shortenId(event.metadata.orderId)}`
+        : "Placed an order";
     default:
       return "Tracked event";
   }
+}
+
+type AnalyticsSummary = {
+  searchCount: number;
+  searchSuccessRate: number;
+  positiveFeedbackCount: number;
+  negativeFeedbackCount: number;
+  topCategory: string | null;
+  topCategoryCount: number;
+  topSearchTerms: Array<{ label: string; count: number }>;
+  topCategories: Array<{ label: string; count: number }>;
+};
+
+function buildAnalyticsSummary(events: SessionEvent[]): AnalyticsSummary {
+  const searchLookup = new Map<string, { label: string; count: number; timestamp: number }>();
+  const categoryLookup = new Map<string, { label: string; count: number }>();
+  let positiveFeedbackCount = 0;
+  let negativeFeedbackCount = 0;
+
+  for (const event of events) {
+    if (event.type === "search" && event.query?.trim()) {
+      const key = normalizeLabel(event.query);
+      const current = searchLookup.get(key);
+      if (current) {
+        current.count += 1;
+      } else {
+        searchLookup.set(key, {
+          label: event.query.trim(),
+          count: 1,
+          timestamp: Date.parse(event.timestamp),
+        });
+      }
+    }
+
+    if (event.type === "recommendation_feedback") {
+      if (event.metadata?.feedback === "more_like_this") positiveFeedbackCount += 1;
+      if (event.metadata?.feedback === "not_relevant") negativeFeedbackCount += 1;
+    }
+
+    const categories = event.metadata?.category;
+    if (Array.isArray(categories)) {
+      for (const category of categories) {
+        const trimmed = category.trim();
+        if (!trimmed) continue;
+        const key = normalizeLabel(trimmed);
+        const current = categoryLookup.get(key);
+        if (current) {
+          current.count += 1;
+        } else {
+          categoryLookup.set(key, { label: trimmed, count: 1 });
+        }
+      }
+    }
+  }
+
+  const topSearchTerms = [...searchLookup.values()]
+    .sort((left, right) => right.count - left.count || right.timestamp - left.timestamp)
+    .slice(0, 4)
+    .map(({ label, count }) => ({ label, count }));
+
+  const topCategories = [...categoryLookup.values()]
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+    .slice(0, 4)
+    .map(({ label, count }) => ({ label, count }));
+
+  const searchCount = events.filter(
+    (event) => event.type === "search" && event.query?.trim(),
+  ).length;
+  const engagedSearches = events.reduce((count, event, index) => {
+    if (event.type !== "search" || !event.query?.trim()) return count;
+
+    const searchTimestamp = Date.parse(event.timestamp);
+    const engaged = events.slice(index + 1).some((laterEvent) => {
+      if (Date.parse(laterEvent.timestamp) < searchTimestamp) return false;
+      return (
+        laterEvent.type === "product_view" ||
+        laterEvent.type === "add_to_cart" ||
+        laterEvent.type === "checkout_start" ||
+        laterEvent.type === "order_placed"
+      );
+    });
+
+    return engaged ? count + 1 : count;
+  }, 0);
+
+  return {
+    searchCount,
+    searchSuccessRate: searchCount > 0 ? engagedSearches / searchCount : 0,
+    positiveFeedbackCount,
+    negativeFeedbackCount,
+    topCategory: topCategories[0]?.label ?? null,
+    topCategoryCount: topCategories[0]?.count ?? 0,
+    topSearchTerms,
+    topCategories,
+  };
+}
+
+function normalizeLabel(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function formatTimestamp(timestamp: string) {

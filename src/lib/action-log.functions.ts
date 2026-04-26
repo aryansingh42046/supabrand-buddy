@@ -42,16 +42,18 @@ export const loadActionLog = createServerFn({ method: "POST" })
     const limit = data.limit ?? 250;
     const historicalEvents = await loadHistoricalRecommendationEvents(limit);
 
-    const events = historicalEvents.filter((event) => {
-      if (data.userId) {
-        return event.userId === data.userId || event.sessionId === data.sessionId;
-      }
+    const events = historicalEvents
+      .filter((event) => {
+        if (data.userId) {
+          return event.userId === data.userId || event.sessionId === data.sessionId;
+        }
 
-      return event.sessionId === data.sessionId;
-    }).map((event) => ({
-      ...event,
-      metadata: sanitizeMetadata(event.metadata),
-    }));
+        return event.sessionId === data.sessionId;
+      })
+      .map((event) => ({
+        ...event,
+        metadata: sanitizeMetadata(event.metadata),
+      }));
 
     return {
       events,

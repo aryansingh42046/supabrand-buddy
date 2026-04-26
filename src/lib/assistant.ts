@@ -1,6 +1,11 @@
 import { formatPrice, type Product } from "@/lib/products";
 import { type SessionEvent } from "@/lib/session-analytics";
-import { deriveSessionSignals, recommendProducts, type RecommendedProduct } from "@/lib/recommendations";
+import {
+  deriveSessionSignals,
+  materializeProductsByIds,
+  recommendProducts,
+  type RecommendedProduct,
+} from "@/lib/recommendations";
 
 export const assistantQuickPrompts = [
   "Recommend something for me",
@@ -60,8 +65,10 @@ function isSimilarityIntent(query: string) {
 
 function applyBounds(pool: Product[], bounds: PriceBounds) {
   return pool.filter((product) => {
-    if (typeof bounds.minPrice === "number" && Number(product.price) < bounds.minPrice) return false;
-    if (typeof bounds.maxPrice === "number" && Number(product.price) > bounds.maxPrice) return false;
+    if (typeof bounds.minPrice === "number" && Number(product.price) < bounds.minPrice)
+      return false;
+    if (typeof bounds.maxPrice === "number" && Number(product.price) > bounds.maxPrice)
+      return false;
     return true;
   });
 }
@@ -75,20 +82,33 @@ function buildFollowUps(items: RecommendedProduct[]) {
   return [...new Set(followUps)].slice(0, 3);
 }
 
-export function buildAssistantReply({ query, pool, events, cartProducts }: AssistantRequest): AssistantReply {
+export function buildAssistantReply({
+  query,
+  pool,
+  events,
+  cartProducts,
+}: AssistantRequest): AssistantReply {
   const trimmed = query.trim();
   const bounds = parsePriceBounds(trimmed);
   const signals = deriveSessionSignals(events);
   const filteredPool = applyBounds(pool, bounds);
   const searchTerms = [trimmed, ...signals.searchTerms].filter(Boolean);
-  const recentProducts = pool.filter((product) => signals.recentProductIds.includes(product.id));
-  const orderProducts = pool.filter((product) => signals.orderProductIds.includes(product.id));
+  const recentProducts = materializeProductsByIds(pool, signals.recentProductIds);
+  const orderProducts = materializeProductsByIds(pool, signals.orderProductIds);
+  const positiveFeedbackProducts = materializeProductsByIds(
+    pool,
+    signals.positiveFeedbackProductIds,
+  );
+  const negativeFeedbackIds = signals.negativeFeedbackProductIds;
   const recommendContext = {
-    recentProducts: [...recentProducts, ...orderProducts],
+    recentProducts: [...recentProducts, ...orderProducts, ...positiveFeedbackProducts],
     cartProducts,
     orderProducts,
     searchTerms,
     events,
+    excludeIds: negativeFeedbackIds,
+    positiveFeedbackProductIds: signals.positiveFeedbackProductIds,
+    negativeFeedbackProductIds: negativeFeedbackIds,
     limit: 6,
   };
 
