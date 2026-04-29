@@ -50,7 +50,7 @@ export function WishlistDrawer() {
               cta={
                 <SheetClose asChild>
                   <Button asChild>
-                    <Link to="/auth" search={{ redirect: "/" }}>
+                    <Link to="/auth" search={{ redirect: "/", mode: undefined }}>
                       Sign in
                     </Link>
                   </Button>
