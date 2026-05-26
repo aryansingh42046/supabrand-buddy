@@ -8,6 +8,8 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
+    "export": "tanstack export",
+    "build:static": "vite build --mode static",
     "test": "vitest run --environment node",
     "lint": "eslint .",
     "format": "prettier --write ."
